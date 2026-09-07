@@ -1,131 +1,81 @@
 # dsh-web-relay
 
-实验性 free-web 中继插件：在 dsh 主 agent 与外部网页 AI（Gemini Free API 或手动粘贴）之间建立可追溯的三方协作通道。
+> DeepSeek Harness (`dsh`) 三方协作协议插件 —— 把「用户 / 主 agent / 外部 AI」的协作固化为可执行协议，并接入 Claude Code 混合审核链与无介入续跑。
 
-> **权威来源**：本目录（`victormshan/DSH` 仓库内的 `dsh-web-relay/`）是唯一维护的源码位置。
-> 修改、提交、发版都在此进行；`deploy.ps1` 负责部署到 dsh profile 的安装目录。
+[![Awesome DSH Plugin](https://awesome-dsh-plugin.com/badge.svg)](https://awesome-dsh-plugin.com)
 
-- **当前版本**：见 [`package.json`](./package.json) 的 `version` 字段（本行不手写版本号，避免漂移——改进方案 P1-3 单一数据源；当前协议 v2.0：全角色降级链 external→web-gemini→claude-code→dialog→manual + alternatives 裁决管道 + batchStepIds 受控并发；v1.9 AutoIteration、v1.8 混合模式 + v1.8.1 澄清全部保留）
-- **说明文档**：[docs/dsh-web-relay-说明书.md](docs/dsh-web-relay-说明书.md)
-- **版本快照**：[releases/v1.2.0/](releases/v1.2.0/)（全量文件快照，不依赖增量 Edit）｜[releases/v1.1.0/](releases/v1.1.0/)（上一里程碑）｜[v1.0.0/](releases/v1.0.0/)｜[v0.9.0/](releases/v0.9.0/)｜[v0.8.0/](releases/v0.8.0/)｜[v0.7.0/](releases/v0.7.0/)（版本快照为历史里程碑，不随当前版本滚动）
-- **部署**：运行 `deploy.ps1`（含版本断言检查）或手动复制 `lib/`、`package.json`、`cordis.patch.yml` 到 `C:\Users\Administrator\.dsh\profiles\web\node_modules\dsh-web-relay\`
+English intro: a protocol-driven collaboration layer for DeepSeek Harness — three-party coordination (user / main agent / external AI), a machine-readable Step List state machine, a five-tier review chain (external → web-gemini → claude-code → dialog → manual), alternatives adjudication, cross-restart resume with heartbeat, and a capability-persistence system.
 
----
+## 功能简介与能力矩阵
 
-## 目录结构
+| 能力 | 说明 |
+|---|---|
+| **三方协作协议 v2.0** | 用户定调 → 外部 AI 规划（json:agent-action + 机器可读 steps）→ 主 agent 带证据执行 → 五级通道审核 → 收口发布 |
+| **Step List 状态机** | pending/executing/review/approved/rejected + DAG 依赖门控 + importance 分工 + 原子打回 + restructure + AutoIteration 版间门 |
+| **五级审核链** | `external(Gemini) → web-gemini → claude-code(本地 Claude Code) → dialog → manual`；reviewedBy 全程审计；Swarm 双角色盲审可叠加 |
+| **混合架构** | 经 `D:\cc-tasks`（Linux: `~/cc-tasks`）派发 Claude Code（implement/review/understand），失败自动降级回三方链 |
+| **alternatives 裁决** | 多方案打分择优 → `step.decision` + 轨迹（6 段模板）|
+| **无介入续跑** | 重启事件驱动（sessionId 注入）+ 心跳时间驱动（15min）双保险，watchdog 自愈托管（Windows 计划任务 / Linux systemd）|
+| **能力持久化** | lessons 37 / registry 17 / skills 3 / runbook——跨会话可检索，裸会话 skill 加载 |
+| **协议版本** | v1.5→v2.0 全量（面板可选），外部 AI 每次调用注入协议语境 |
 
+## 安装
+
+### 插件（dsh web profile）
+```sh
+# 从 Git 源（推荐，本仓库即源）
+dsh plugin --profile web add git+https://github.com/victormshan/dsh-web-relay.git
+# 或发布 npm 后
+dsh plugin --profile web add dsh-web-relay
+# 离线：复制 lib/bin/package/cordis.patch.yml 到 profile node_modules + cordis.patch.yml 追加插件行（或 scripts/install-new-env.ps1/.sh）
 ```
-dsh-web-relay/
-├── lib/                    # 插件源码（版本以 package.json 为准）
-│   ├── index.js            # Host half（约 3200 行：协议 v1.5/v1.6/v1.7/v1.8/v1.9 多版本、Step List、并发调度、依赖门控、审核降级链、auto-review、Planning、alternatives/importance、restructure、原子打回、mainagent 自动豁免、AutoIteration、全角色降级链、Swarm 双角色盲审）
-│   └── client.js           # Browser bundle（平铺布局 + Step List UI + 协议版本选择器(v1.5-v1.9) + planning 开关 + 自动/批量审核按钮 + importance/mainagent 徽标 + restructure 重构 UI + 语言设置）
-├── package.json            # 插件元数据（version 为唯一版本数据源）
-├── cordis.patch.yml        # profile 挂载补丁
-├── docs/                   # 说明书
-├── releases/               # 里程碑全量快照
-├── deploy.ps1              # 部署脚本（版本断言 + 复制到安装目录）
-├── .gitattributes          # LF 换行强制
-├── .editorconfig           # 编辑规范
-└── .gitignore              # 忽略运行数据
-```
+安装后**重启 dsh web**（Host half 启动加载；仅改 client.js 走浏览器 HMR 热更）。
 
-## 开发与维护规范（防止版本丢失事故）
-
-> 背景：v0.7.0 曾因安装目录被回滚而"丢失"，最终只能从会话日志逐条重放增量 Edit 才恢复。
-> 以下 4 条规范用于彻底避免此类事故，**Agent 与人都必须遵守**。
-
-### 1. 里程碑版本必须 Git 归档（最核心）
-
-任何里程碑版本（如 v0.7.0）完成时，**必须**：
-
-```bash
-git add -A
-git commit -m "v0.7.0: Step List + auto-review + Planning (v1.4)"
-git tag v0.7.0
+### 能力包（主 agent 语境能力：docs/skills/lessons）
+```sh
+# 解压 dist/dsh-relay-capability-pack-<ver>.tar.gz → docs/skills/scripts 参照 + skills 同步 ~/.dsh/skills
+# 或一键：scripts/install-new-env.ps1 -CapabilityPack dist/….tar.gz（Windows）/ install-new-env.sh -c …（Linux）
 ```
 
-需要回退时直接 `git checkout v0.7.0` / `git reset --hard v0.7.0`，由 Git 保证原子性恢复，
-**绝不手动拼接/重放旧 Patch**。
+### 宿主托管与 env（可选但推荐）
+- watchdog：Windows 计划任务 / Linux systemd（scripts/install-new-env.* 自动注册）
+- env：`DSH_RELAY_REPO`（装配指针）/ `DSH_CC_TASKS_ROOT`（cc 派发目录）/ `GEMINI_API_KEY`（Linux 写 `~/.dsh/env`，Windows 注册表）/ `DSH_SESSION_ID`（无介入续跑注入）
 
-### 2. 禁止"重放历史 Edit"，采用全量快照
+## 权限与安全说明
 
-版本发布或里程碑节点，**必须**同步生成完整文件快照到 `releases/<version>/`
-（`lib/` + `package.json` + `cordis.patch.yml` 全量复制），而不是依赖跨会话解析日志重建。
+- **审核链审计**：每次 approved/rejected 记录 `reviewedBy / providerLabel / fallbackReason / channel`（frontmatter + steps notes），全程可溯源。
+- **命令护栏**：主 agent 危险命令拦截、越界文件策略为运行时最高硬约束（协议 v1.8.1）；`review:false` 不能解除安全护栏。
+- **混合架构边界**：Claude Code 经 `acceptEdits + allowedTools(Read,Write,Bash)` 白名单执行，`acceptEdits` ≠ 免批命令（权限分离）；runner 失败检测 + 主 agent 降级链兜底。
+- **沙盒**：complete 触发 L1/L2 影子门禁（源码语法预检 / worktree 隔离校验）。
+- 安装第三方插件即运行第三方代码——review 源码后再装（社区 disclaimer 同）。
 
-### 3. 统一全局换行符（LF）
+## 文档索引
 
-仓库根已有 `.gitattributes`（`* text=auto eol=lf`）与 `.editorconfig`。
-所有 `.js` / `.json` / `.yml` 文件**必须使用 LF**，禁止混入 CRLF，
-防止跨环境执行 `str_replace` 时因 `\r\n` 差异导致匹配撕裂。
-
-### 4. 修改前做基准版本断言（Version Assertion）
-
-给主 Agent 下达重构/改版指令时，Prompt 必须包含：
-
-> 在执行任何修改前，请先读取 `package.json` 中的版本号或 `git describe --tags`，
-> 验证基准版本无误后再操作；如版本不匹配，先提示停止，不要强行 Patch。
-
-`deploy.ps1` 已在部署侧实现同样检查：源版本与安装目录版本不一致时拒绝部署。
-
-## 宿主 Watchdog 与优雅停机（v3.9.0）
-
-宿主（dsh web）启动时加载插件 lib、运行期不重载 → 宿主侧改动需重启。v3.9 提供「优雅停机 + 独立 watchdog 轻量拉起」闭环：
-
-1. **优雅停机准备端点** `POST /dsh-web-relay/admin/prepare-restart`（插件侧）：
-   - 触发后停收新任务（`/ask` 与新步骤 `start` 返回 HTTP 409）并返回 `ready:true`；in-flight 完成/审核不受影响。
-   - `POST {cancel:true}` 复位；`GET` 查询状态。宿主重启后进程级状态自动复位。
-   - `/health-check` 同步暴露 `preparing/preparedAt`（watchdog 与面板状态灯数据源）。
-2. **宿主 Watchdog 独立进程** `bin/watchdog.mjs`（不进插件 lib，独立部署）：
-   - 每 `CHECK_MS`(5s) 探测 `GET /health-check`（HTTP200 且 `body.ok===true` 为存活）；连续 miss ≥ `MISS_N`(3) → 先请求 prepare-restart → `taskkill /PID <pid> /T /F` 树杀 → 重新拉起宿主。
-   - 防风暴：`WINDOW_MS`(10min) 内重启 ≥ `MAX_RESTARTS`(3) 次则暂停 `PAUSE_MS`(10min)（先判门再记录，暂停期不累计）。
-   - **模拟模式**：`DSH_WEB_DRYRUN=1` 只打日志不 kill/spawn（验收/演练用）。
-   - 环境变量：`DSH_WEB_PORT`(3080)、`DSH_WEB_CMD`（整条命令，优先）、`DSH_WEB_BIN`/`DSH_WEB_ARGS`、`DSH_NODE_EXE`、`DSH_WEB_LOG`、`DSH_WEB_CHECK_MS`/`DSH_WEB_MISS_N`/`DSH_WEB_MAX_RESTARTS`/`DSH_WEB_WINDOW_MS`/`DSH_WEB_PAUSE_MS`。
-   - 默认宿主命令自动探测：`<node realpath> <nvm 全局 node_modules>/@deepseek-ai/dsh/lib/bin.js web`。
-3. **部署（Windows 计划任务，开机自启 + 崩溃自愈）**：
-   ```powershell
-   $action = New-ScheduledTaskAction -Execute '<node.exe 完整路径>' -Argument 'D:\DSH\dsh-web-relay\bin\watchdog.mjs' -WorkingDirectory 'D:\DSH\dsh-web-relay'
-   $trigger = New-ScheduledTaskTrigger -AtLogOn
-   Register-ScheduledTask -TaskName 'DSH-WEB-Watchdog' -Action $action -Trigger $trigger -Force
-   ```
-   注意：watchdog 会拉起宿主进程（默认 `dsh web` 命令），请确认与手动启动方式不冲突（二选一，勿双开）。
-4. **面板**：健康状态灯旁显示琥珀「优雅停机准备中（重启通道已就绪）」（`/health-check.preparing`，30s 轮询）。
+| 文档 | 内容 |
+|---|---|
+| **[THREE-PARTY-WALKTHROUGH.md](docs/THREE-PARTY-WALKTHROUGH.md)** | 一次完整三方协作回合走查（七回合：定调→规划→执行→审核→循环→收口→发布，真实案例）|
+| **[AGENT-CAPABILITY-COMPARISON.md](docs/AGENT-CAPABILITY-COMPARISON.md)** | 能力对比：本体系 vs Claude Code（差距/超越/实现多样性，Claude 自述 + 外部 AI 评审）|
+| [CC-HYBRID.md](docs/CC-HYBRID.md) | 混合架构（cc 派发/降级/验收协议 v1.0/协议化 §6）|
+| [OPS-RESTART-RESUME.md](docs/OPS-RESTART-RESUME.md) | 宿主托管与重启续跑 SOP（含无介入续跑实证 §6）|
+| [INSTALL-NEW-ENV.md](docs/INSTALL-NEW-ENV.md) | 新环境三步安装（插件/能力包/环境件 + 装后清单）|
+| [LINUX-PORT.md](docs/LINUX-PORT.md) | WSL/Linux 移植（兼容矩阵/platform-ops 适配/限制）|
+| [capabilities/registry.yaml](docs/capabilities/registry.yaml) | 能力索引 17 条（verification 自动校验）|
+| [main-agent-lessons.json](docs/main-agent-lessons.json) | 37 条事故复盘（跨会话避坑）|
+| [main-agent-runbook-v0.1.md](docs/main-agent-runbook-v0.1.md) | 主 agent 执行手册（纪律 §2.7 重启/续跑/回合闭环）|
+| [dsh-web-relay-说明书.md](docs/dsh-web-relay-说明书.md) | 完整说明书（面板/协议/操作）|
 
 ## 版本历史
 
-> 注：下表为历史里程碑记录；**当前版本以 `package.json` 为准**（单一数据源，见改进方案 P1-3）。
-
 | 版本 | 协议 | 内容 |
 |---|---|---|
-| 4.9.2 | v2.0 | 心跳自查双保险（机制 b，时间驱动续跑兜底）：宿主周期（DSH_RELAY_HEARTBEAT_MS 默认 15min）扫描待办信号（review-pending/rejected-pending/executing-stale/finalize-pending/resume-circuit-paused）→ 有待办自动 wakeMainAgent 注入「心跳自查」消息（/admin/heartbeat-check 手动触发；/health-check.heartbeat 暴露；陈旧过滤 maxAgeMs 48h 防历史僵尸刷屏）；无介入续跑实证（sessionId 双回退 wakeSid + expr 落盘 DSH_SESSION_ID → 重启/心跳两条通道零用户输入唤醒，OPS-RESTART-RESUME §6）；审核上下文 tailClip 尾部截断修复（v9_4 五次误拒根因）；watchdog kill-host 子命令（主 agent 自主重启入口）；lessons 036（空等复盘）/035；registry 17 条；全量 229/229 |
-| 4.9.1 | v2.0 | 收尾修复：审核上下文截断缺陷（tailClip 尾部优先——trace/notes 长文头截丢最新证据致审方误拒，commit 7578cc5）；lesson 035/036；kill-host/restart-now 能力工具化；skill §5 宿主重启与续跑自检固化 |
-| 4.9.0 | v2.0 | 协议演进四方向落地（expr-2026-09-06_16-32-52，外部 AI 排位 C→A→B→D）：① 全角色降级链插入本地 claude-code 通道（external→web-gemini→claude-code→dialog→manual；lib/cc-channel.js 客户端，Claude Code kind=implement 实现主 agent 校验合入，reviewChannel=claude-code 强制通道，降级标注 reviewedBy=claude-code）；② alternatives 裁决管道（lib/alternatives-compare.js 6 段模板 + POST /steps/alternatives-review → step.decision + notes）；③ batchStepIds 受控并发审核（预检串行 → mapLimit 并发取结论 → 串行 apply/原子打回统一落盘，无写盘竞态；callGemini 429/5xx 退避）；④ reviewOneStep 拆层（obtainReviewVerdict/applyReviewOutcome）+ 协议 v2.0 常量/文本/选择器；全量 218/218（+30：cc-channel 21 + alternatives 9） |
-| 4.8.0 | v1.9 | 能力持久化 4 条建议落地（expr-2026-09-06_15-10-42，外部 AI 排位 P1-P4）：cap_1 3 个 SKILL.md 补 YAML frontmatter → **harness 可用 skill 列表热读识别 3 技能**（裸新对话可 skill 加载能力）；cap_2 装配路径 env 化（REPO_ROOT = DSH_RELAY_REPO \|\| import.meta.url 上溯）；cap_3 export-capability-pack.mjs（skills 同步 ~/.dsh/skills + tar 打包 docs/skills/scripts → dist 能力包）；cap_4 SKILL 导引（未装配裸对话先读 registry/runbook）；全量 188/188 |
-| 4.7.0 | v1.9 | 续跑机制完善（外部 AI 排位 C→B，expr-2026-09-06_12-17-11）：isTest 逻辑归档（isTest+done 的 expr 续跑扫描跳过，scanBase 过滤 + 读写白名单）；多会话并发批量计划 planResumes（不同 sessionId 独立 queue 不冲突不丢，纯函数）；resume-scan.test +2（isScanEligible/planResumes）；全量 169/169 |
-| 4.6.0 | v1.9 | /health-check 暴露续跑统计 resumed{at,checked,resumed,paused,resumedExprs}（bootResumeScan 与 /admin/resume-scan 写入 lastResumeScan）——重启续跑可观测；迭代 2 版（v4.5.0→v4.6.0）后重启续跑演示 version=4.6.0 |
-| 4.4.1 | v1.9 | 运维收尾（2026-09-06）：watchdog 计划任务 wscript 隐藏 launcher（vbs 无窗口，修 Hidden 不阻 cmd 控制台）；RestartOnFailure（RestartCount5/PT1M）+ ExecutionTimeLimit=0（防 72h 被杀/强杀不复活）；bootResumeScan wake 成功打标 resumeQueuedAt（真实会话续跑验证载体）；lesson 033（编排严禁先杀 watchdog）；真实会话协作续跑完整测试通过（外部 AI 复核：验收 4 项+判定点全过，hello+三时间戳实测）；日志 UTF8 查看命令；33 lessons/全量 167/167 |
-| 4.4.0 | v1.9 | 能力持久化未决 5 项闭环（expr-2026-09-05_14-50-07，S1-S5 external approved）：U5 verify --update 自动回写 lastVerified（14 条）；U3 AutoIteration 声明解析兜底（lib/autoiter-decl.js 重构：JSON 字段序无关 + 引号容忍叙述/中文，auto-iter-decl.test 6 例）；U1 Lesson Top-K 触发注入（lib/lessons-inject.js bigram 打分，wake 装配按触发词注入 Top 教训，lessons-inject.test 6 例）；U4 watchdog restart-now 原子子命令（prepare→树杀→首检拉起，DRYRUN 演练）；U5 跨宿主自动唤醒续跑实测（S5，sessionId+bootId 忙态 expr + restart-now）；全量 167/167 |
-| 4.3.0 | v1.9 | AutoIteration 实验 V3 收口（expr-2026-09-05_13-58-07，11 步全 approved）：docs/AUTO-ITERATION-ANALYSIS.md（完全自主三方协作自动迭代效果分析：6 观察点+数据+改进建议）；lessons 030/031（.test.js 命名陷阱、AutoIteration 声明机读 JSON 块）；全量 154/154 |
-| 4.2.0 | v1.9 | AutoIteration 实验 V2（expr-2026-09-05_13-58-07）：运维 SOP docs/OPS-RESTART-RESUME.md（架构/重启续跑机制/面板徽标/应急 SOP/命令）；client 续跑/熔断审计日志；client-restart.test 2 例（含命名修正）；全量 154/154 |
-| 4.1.0 | v1.9 | AutoIteration 实验 V1（expr-2026-09-05_13-58-07）：面板托管/续跑状态呈现——健康行 bootId 短显 + 回滚状态行重启续接徽标（↻ restartCount·自动续跑 / ⛔ 续跑熔断·已跨重启 N）；zh/en +4 键；纯 client 零后端改动；全量 152/152 |
-| 4.0.0 | v1.9 | 宿主重启续跑（cross-restart resume，expr-2026-09-05_13-35-19 external approved）：CURRENT_BOOT_ID 每进程唯一 + 写盘打戳/读白名单（sessionId/bootId/restartCount）；ask/execute 创建落盘 sessionId + record frontmatter；apply 尾 bootResumeScan（跨 bootId 忙态 expr → restartCount+1：resume→trace+wakeMainAgent 自动唤醒续跑 / 无 sessionId 降级留痕；≥2 熔断 paused 防死循环；rejectStreak/iterationBaseCommit 跨重启保持）；/admin/resume-scan 手动触发端点；health-check 暴露 bootId；resume-scan.test 4 例，全量 152/152 |
-| 3.9.3 | v1.9 | watchdog 总守护升级：除托管 3080 宿主外，周期检查桥接链路（8899 /__token）——发现 DSH-Bridge-Watchdog 未运行则自动拉起（bridgeDecision 纯决策：在线 ok / watchdog 在自愈不重复拉 / 双缺拉起 / 无配置跳过；进程探测 powershell spawnSync；独立防风暴）；watchdog.test 13 例，全量 148/148 |
-| 3.9.2 | v1.9 | watchdog 运维加固（expr-2026-09-05_12-50-06 外部 AI 协商收尾）：启动首检立即拉起（不等 miss 轮询，开机空窗 15s→2s，真实模式端到端验证）；单例锁（.watchdog.lock PID 互斥防双开，stale 自动接管）；启动器并入 tailscale serve --bg 持久配置（幂等+重试）；watchdog.test 11 例，全量 146/146 |
-| 3.9.1 | v1.9 | watchdog env 补注入（spawn 宿主前从注册表 User→Machine 回读 GEMINI_API_KEY/GEMINI_MODEL 并入子进程 env——修深层进程链丢 key 致 /status gemini=false；parseRegValue CRLF 修复）；watchdog.test +2（parseRegValue/childEnv），全量 144/144 |
-| 3.9.0 | v1.9 | 优雅停机 + watchdog 自愈（expr-2026-09-05_01-53-03，S1-S5 external approved）：/admin/prepare-restart 端点（409 停新任务/start、cancel 复位、health-check 暴露 preparing）+ bin/watchdog.mjs 独立进程（miss≥3→prepare→树杀→拉起、stormGate 防风暴、DRYRUN 模拟）+ 面板琥珀提示灯；watchdog.test 7 + admin.test 2，全量 142/142 |
-| 3.8.0 | v1.9 | GC 定时化 + 回滚状态复位/持久化修复 + 面板回滚展示（expr-2026-09-05_01-22-37）：gcScheduleMs + apply 进程级定时 GC（DSH_RELAY_GC_MS/DSH_RELAY_REPO_PATH）；rollback-state.js 复位策略；修 v3.7.1 持久化洞（基线/回滚 5 字段纳入读写白名单）；rollback E2E 三情形全绿；全量 133/133 |
-| 3.2.6 | v1.9 | 长回答截断根治：dialog/claude 超时 60s/120s→300s、web-gemini 150s→300s、error/aborted chunk 拦截、extractChunkText 跳过 reason/error/code/message 键 |
-| 3.2.5 | v1.9 | 产物摘要截断显式标注"（摘要已截断，全文见产物文件）" |
-| 3.2.2 | v1.9 | reviewChannel 参数（auto / web-gemini 强制网页审核） |
-| 3.2.0 | v1.9 | Swarm 双角色盲审（Security-Auditor / Refactoring-Architect，AND 门共识） |
-| 3.1.0 | v1.9 | 拒收原因聚类 + 案例库注入（Top-K≤3）+ Prompt 自主进化 |
-| 3.0.1 | v1.9 | 审核降级链加入 web-gemini 网页通道 |
-| 1.3.0 | v1.9 | AutoIteration 自动迭代（{"iterations":N} 多版本自动演进、版间门 Vn+1、连续打回≥3 熔断 paused）+ 全角色降级链（ask/审核 external→dialog→pause，channel=dialog-fallback） |
-| 1.2.1 | v1.8（+v1.8.1 澄清） | restructure 悬空依赖校验 400 + 打回清空 reviewedBy + review:null 语义 + 安全护栏优先（三方双视角评估定案） |
-| 1.2.0 | v1.8 | 混合模式 importance 驱动分工（low 免审 / medium 批量轻审 / high 三方严格审）+ review:false 硬开关 + restructure 状态隔离 + 批量原子打回 + 5 段模板缺省对齐 |
-| 1.1.0 | v1.7 | 多方案比较 alternatives + 步骤权重 importance 批量审核 + planning 双向 + 5段式打包模板 + artifacts 前置校验 |
-| 1.0.0 | v1.6 | Step List 并发调度（depends_on / parallel_group）+ 顶栏协议版本选择 + 依赖门控 + 主 agent subagent 并行 |
-| 0.9.0 | v1.5 | 审核三级降级链 + 进度看板 + 审核面板化/一键收口 + 智能打包 + 探路缓存 + 语言中/英 |
-| 0.8.0 | v1.4 | 平铺布局：与 DSH 页面左右平铺 + 可拖动分割条 + 折叠 rail + DSH tokens（布局方案落地） |
-| 0.7.0 | v1.4 | Step List + 外部 AI 审核 + 自动审核 + Planning & Architect |
-| 0.6.0 | v1.3 | Step List 执行与外部 AI 审核回路 |
-| 0.5.0 | v1.2 | 记录域与 side-window 解耦，experiments/traces 独立落盘 |
+| 4.9.2 | v2.0 | 混合架构前端入口（claude-code 面板选项）、心跳双保险、无介入续跑实证、新环境可迁移（files/dist/INSTALL）、WSL/Linux 移植（platform-ops/install.sh）、能力对比与走查文档 |
+| 4.9.1 | v2.0 | tailClip 审核上下文修复、kill-host 工具化、skill §5 重启/续跑纪律、lessons 035/036/037 |
+| 4.9.0 | v2.0 | 协议演进四方向：claude-code 降级链 + alternatives 裁决 + 并发审核批（外部 AI 排位 C→A→B→D）|
+| 4.8.0 | v1.9 | 能力持久化 4 条建议（skills frontmatter/装配 env/能力包导出/SKILL 导引）|
+| … | | （更早见 git 历史）|
+
+## 贡献与社区
+
+- 本插件收录于 [awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin)（`data/plugins/victormshan__dsh-web-relay.yml`）、[dsh-market](https://github.com/dsh-market/dsh-market)、[dsh-find-plugin](https://github.com/awesome-dsh-plugin/dsh-find-plugin)。
+- 问题/建议：本仓库 Issues（或 awesome-dsh-plugin 插件页 Discussions 评论区）。
+- 开发：协议/审核/混合架构演进按本仓库 docs 体系（先读 THREE-PARTY-WALKTHROUGH + CC-HYBRID + runbook §2.7）。
