@@ -34,10 +34,10 @@
 
 | 层 | 内容 | 存放位置 | 随插件版本化 |
 |---|---|---|---|
-| project | dsh-web-relay 调用链、模块路径、降级逻辑 | `D:\DSH\dsh-web-relay\docs\` | ✅ |
-| workflow | 自动迭代建模、排障流程 | `D:\DSH\dsh-web-relay\skills\` + 部署到 `~/.dsh/skills/` | ✅ |
+| project | dsh-web-relay 调用链、模块路径、降级逻辑 | `D:\dsh-web-relay\docs\` | ✅ |
+| workflow | 自动迭代建模、排障流程 | `D:\dsh-web-relay\skills\` + 部署到 `~/.dsh/skills/` | ✅ |
 | platform | DSH preset、Windows shell、工具配置 | `~/.dsh/skills/` 或独立平台手册 | ❌ |
-| tool | 可执行校验脚本/测试 | `D:\DSH\dsh-web-relay\scripts\` 或 `test\` | ✅ |
+| tool | 可执行校验脚本/测试 | `D:\dsh-web-relay\scripts\` 或 `test\` | ✅ |
 
 ## 3.1 统一模型：粗粒度 Registry 与细粒度 Lesson 分离
 
@@ -75,7 +75,7 @@
 注册表只登记“文档 / Skill / 工具 / 机制”等粗粒度能力入口，不登记细粒度 lesson。维护位置：
 
 ```text
-D:\DSH\dsh-web-relay\docs\capabilities\registry.yaml
+D:\dsh-web-relay\docs\capabilities\registry.yaml
 ```
 
 每条粗粒度能力记录结构：
@@ -173,7 +173,7 @@ D:\DSH\dsh-web-relay\docs\capabilities\registry.yaml
 ## 7. 目录结构规划
 
 ```text
-D:\DSH\dsh-web-relay\
+D:\dsh-web-relay\
 ├── docs\
 │   ├── auto-iteration-modeling.md
 │   ├── capability-persistence-design.md
@@ -207,7 +207,7 @@ D:\DSH\dsh-web-relay\
 运行方式：
 
 ```powershell
-node D:\DSH\dsh-web-relay\scripts\verify-capabilities.mjs
+node D:\dsh-web-relay\scripts\verify-capabilities.mjs
 ```
 
 ## 9. 落地步骤

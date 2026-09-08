@@ -149,7 +149,7 @@ Step 4：提交/打 tag
 详细项目实例见：
 
 ```text
-D:\DSH\dsh-web-relay\docs\auto-iteration-modeling.md
+D:\dsh-web-relay\docs\auto-iteration-modeling.md
 ```
 
 本 Skill 保持通用，不绑定特定项目路径；项目细节放在项目 docs 中。

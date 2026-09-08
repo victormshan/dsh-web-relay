@@ -71,9 +71,9 @@ node scripts/verify-lessons.mjs        # lessons 37 条 error=0
 `scripts/install-new-env.ps1` 封装 §2b+§3+§4（幂等；先 `-WhatIf` 演练）：
 ```powershell
 # 演练（只打印将执行的动作）
-powershell -File scripts/install-new-env.ps1 -PluginSource D:\DSH\dsh-web-relay -CapabilityPack D:\DSH\dsh-web-relay\dist\dsh-relay-capability-pack-4.9.2.tar.gz -WhatIf
+powershell -File scripts/install-new-env.ps1 -PluginSource D:\dsh-web-relay -CapabilityPack D:\dsh-web-relay\dist\dsh-relay-capability-pack-4.9.2.tar.gz -WhatIf
 # 实装
-powershell -ExecutionPolicy Bypass -File scripts/install-new-env.ps1 -PluginSource D:\DSH\dsh-web-relay -CapabilityPack D:\DSH\dsh-web-relay\dist\dsh-relay-capability-pack-4.9.2.tar.gz
+powershell -ExecutionPolicy Bypass -File scripts/install-new-env.ps1 -PluginSource D:\dsh-web-relay -CapabilityPack D:\dsh-web-relay\dist\dsh-relay-capability-pack-4.9.2.tar.gz
 ```
 
 ## 6. 装后验证清单

@@ -2,7 +2,7 @@
 
 > 用途：盘点**截至 2026-09-04 主对话累计的主 agent 能力持久化资产**（承接 9/3 体系 + 本主对话新增），一一列出、可核对。
 > 配套：细账见 `v1.8-v1.9-capability-persistence-ledger.md`（v1.8→v1.9 考古 25+10+1）；能力全文见 `main-agent-auto-iteration-capabilities.md`。
-> 验证：`node D:\DSH\dsh-web-relay\scripts\verify-capabilities.mjs` → **6 条 registry 全绿**。
+> 验证：`node D:\dsh-web-relay\scripts\verify-capabilities.mjs` → **6 条 registry 全绿**。
 > 归属标注：**继承**＝9/3 晚间会话建成经 handoff 移交；**本对话新增**＝本主对话（session 3da39db3 承接 9131169a 后）直接产出；**在库同步**＝同批修订。
 
 ---
@@ -78,7 +78,7 @@
 - `scripts/verify-capabilities.mjs`：解析 registry（6 条）、校验 source/skill 存在、verification 规则（file-exists / content-contains），2026-09-04 全绿。
 - `package.json` `files`：lib/index.js、lib/client.js、cordis.patch.yml + 3 个 SKILL + auto-iteration-modeling.md + capability-persistence-design.md + capabilities/README.md + registry.yaml + verify-capabilities.mjs（**11 条持久化条目随包分发**）。
 - `deploy.ps1`：skill 部署块（agent-tool / main-agent / auto-iteration），已随 9/3 同步。
-- 三副本：`D:\DSH\dsh-web-relay`（源）→ `.dsh\profiles\web\node_modules\dsh-web-relay`（运行）→ `C:\Users\Administrator\web-relay\dsh-web-relay`（工作副本）。
+- 三副本：`D:\dsh-web-relay`（源）→ `.dsh\profiles\web\node_modules\dsh-web-relay`（运行）→ `C:\Users\Administrator\web-relay\dsh-web-relay`（工作副本）。
 
 ---
 

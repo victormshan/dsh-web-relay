@@ -57,7 +57,7 @@
 1. 读 handoff 中的记录/轨迹路径；读记录 md 全文与 steps.json（含顶层字段）。
 2. 核对通道审计：`channel / requestProvider / providerLabel / fallbackReason`——确认这次是 API 直连还是降级。
 3. 取当前步骤（currentStep/activeSteps + 依赖门控：depends_on 全 approved 才可执行）。
-4. 实施：源码改动遵循"源=D:\DSH\dsh-web-relay、运行=安装目录、工作副本"三副本同步；每处改动 `node --check`。
+4. 实施：源码改动遵循"源=D:\dsh-web-relay、运行=安装目录、工作副本"三副本同步；每处改动 `node --check`。
 5. 验证：镜像单测先行（新增逻辑先在 test/ 写镜像断言跑绿，再打补丁）；改动后全量 `node --test test/*.test.js`（当前基线 ≥102）。
 6. 回写证据：追加 trace 条目（改动点、测试结果、commit/tag、行号证据）。
 7. 提审：按 §2.2 规则——high+review:true → 置 review 走外部审核；low/review:false → 直接 approved（reviewedBy=mainagent）。
@@ -68,7 +68,7 @@
 2. 版本锚点测试同步：`test/timeout-fix.test.js` 末例断言 package.json 版本号，随发布更新。
 3. `node --check` 所有改动文件；全量 `node --test test/*.test.js` 全绿（传文件列表，勿用目录参数）。
    3.5 若本次改动涉及 docs/skills/capabilities，运行能力验证：`node scripts/verify-capabilities.mjs`，全绿后再继续。
-4. 三副本同步：`D:\DSH\dsh-web-relay`（源）/ `C:\Users\Administrator\.dsh\profiles\web\node_modules\dsh-web-relay`（运行）/ `C:\Users\Administrator\web-relay\dsh-web-relay`（工作副本）。
+4. 三副本同步：`D:\dsh-web-relay`（源）/ `C:\Users\Administrator\.dsh\profiles\web\node_modules\dsh-web-relay`（运行）/ `C:\Users\Administrator\web-relay\dsh-web-relay`（工作副本）。
 5. git（在 D:\DSH）：
    - 只 add 本任务范围路径（勿误纳 dsh-web-gemini-ext 等未提交改动；可先 stash）。
    - commit → tag `v3.x.y` → `git push origin main --tags`。

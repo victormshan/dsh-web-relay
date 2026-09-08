@@ -40,7 +40,7 @@ docs/capabilities/registry.yaml
 运行能力验证：
 
 ```powershell
-node D:\DSH\dsh-web-relay\scripts\verify-capabilities.mjs
+node D:\dsh-web-relay\scripts\verify-capabilities.mjs
 ```
 
 ## 维护规则
