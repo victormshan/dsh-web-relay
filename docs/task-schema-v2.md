@@ -1,6 +1,6 @@
 # cc-task-schema v2（三方任务契约库）
 
-> 版本：s2v2（AutoIteration expr-2026-09-09_12-30-09 V2/6）
+> 版本：s2v3（AutoIteration expr-2026-09-09_12-30-09 V2/6）
 > 用途：DSH 主 agent → Claude Code（D:\cc-tasks 派发）任务单契约的**严格机器校验**——修 v4.9 事故（done.flag 误放 out/ 致 runner 误判 failed）。
 
 ## 1. task.json 字段规范（TASK_SCHEMA_V2）
@@ -60,7 +60,8 @@ node scripts/task-schema-cli.mjs report <taskDir|parentDir>    # 单任务或父
 ## 6. 测试
 
 - `test/task-schema-v2.test.mjs`：35 用例（fake fs/exec，跨平台 path.join）——validateTask、validateResultText、validateResult（done.flag/errorCode/expectArtifacts/custom outputDir）、runAcceptanceScript、errorCode 分类 6 例
-- 全量基线：275（独立仓 victormshan/dsh-web-relay）
+- 全量基线：280（独立仓 victormshan/dsh-web-relay）
+- s2v3 增补：review 任务默认产物（kind=review 无 expectArtifacts → out/review.md）+ PENDING 语义（无 result.json=执行中，done.flag 双缺不误报；misplaced 恒报）+ runner.sh 完成侧 validate-result 门控（v2-validate-failed）
 
 ## 7. 升级兼容矩阵
 

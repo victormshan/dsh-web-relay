@@ -406,3 +406,56 @@ test("errorCode: 合法 result → resultErrorCode/doneFlagErrorCode null", asyn
   assert.equal(details.resultErrorCode, null);
   assert.equal(details.doneFlagErrorCode, null);
 });
+
+// ---- s2v3_1: review 任务 expectArtifacts 自动兜底 ----
+test("s2v3_1: kind=review 无 expectArtifacts → 默认校验 out/review.md（缺 → missing artifact）", async () => {
+  const fsImpl = makeFakeFs({
+    [path.join(TASK_DIR, "done.flag")]: "",
+    [path.join(TASK_DIR, "result.json")]: JSON.stringify({ status: "done", exit: 0 }),
+    // 无 out/review.md
+  });
+  const { ok, errors, details } = await validateResult({ taskDir: TASK_DIR, task: validTask({ kind: "review" }), fsImpl });
+  assert.equal(ok, false);
+  assert.ok(errors.some((e) => e.includes("missing artifact: review.md")));
+  assert.ok(details.artifacts.some((a) => a.name === "review.md" && a.exists === false));
+});
+
+test("s2v3_1: review 任务 out/review.md 存在 → 通过；非 review 不受默认产物影响", async () => {
+  const withReview = makeFakeFs({
+    [path.join(TASK_DIR, "done.flag")]: "",
+    [path.join(TASK_DIR, "result.json")]: JSON.stringify({ status: "done", exit: 0 }),
+    [path.join(TASK_DIR, "out", "review.md")]: "VERDICT: APPROVED",
+  });
+  const r1 = await validateResult({ taskDir: TASK_DIR, task: validTask({ kind: "review" }), fsImpl: withReview });
+  assert.equal(r1.ok, true);
+  const noReview = makeFakeFs({
+    [path.join(TASK_DIR, "done.flag")]: "",
+    [path.join(TASK_DIR, "result.json")]: JSON.stringify({ status: "done", exit: 0 }),
+  });
+  const r2 = await validateResult({ taskDir: TASK_DIR, task: validTask({ kind: "implement" }), fsImpl: noReview });
+  assert.equal(r2.ok, true);
+});
+
+// ---- s2v3_2: PENDING 消误报 ----
+test("s2v3_2: 无 result.json（执行中）且无 done.flag → 不报 done-flag-missing（pending 语义）", async () => {
+  const fsImpl = makeFakeFs({}); // 空任务目录 = 执行中
+  const { errors, details } = await validateResult({ taskDir: TASK_DIR, task: validTask(), fsImpl });
+  assert.equal(details.doneFlagErrorCode, null);
+  assert.ok(!errors.some((e) => e.includes("done-flag-missing")));
+  assert.ok(errors.some((e) => e.includes("result-missing"))); // result 缺失仍提示
+});
+
+test("s2v3_2: 有 result.json 但 done.flag 双缺 → 仍报 done-flag-missing（任务已结束）", async () => {
+  const fsImpl = makeFakeFs({
+    [path.join(TASK_DIR, "result.json")]: JSON.stringify({ status: "done", exit: 0 }),
+  });
+  const { errors, details } = await validateResult({ taskDir: TASK_DIR, task: validTask(), fsImpl });
+  assert.equal(details.doneFlagErrorCode, "done-flag-missing");
+});
+
+test("s2v3_2: 执行中 done.flag 误放 out/ → 仍报 misplaced（契约违例不因 pending 豁免）", async () => {
+  const fsImpl = makeFakeFs({ [path.join(TASK_DIR, "out", "done.flag")]: "" });
+  const { errors, details } = await validateResult({ taskDir: TASK_DIR, task: validTask(), fsImpl });
+  assert.equal(details.doneFlagErrorCode, "done-flag-misplaced");
+  assert.ok(errors.some((e) => e.includes("misplaced")));
+});
