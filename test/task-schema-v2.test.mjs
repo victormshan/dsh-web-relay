@@ -14,6 +14,7 @@ import {
   runAcceptanceScript,
   classifyTaskRecovery,
   recoveryAction,
+  summarizeValidation,
 } from "../lib/task-schema-v2.mjs";
 
 /** 构造一个基于内存 Map 的 fake fsImpl：files 的 key 是路径，value 是文件内容。 */
@@ -568,4 +569,30 @@ test("s2v5_1: result.json 非法 + 无根 done.flag → failed + inspect", async
   assert.equal(c.state, "failed");
   assert.equal(c.resultErrorCode, "result-corrupt");
   assert.equal(recoveryAction(c), "inspect");
+});
+
+// ---- s2v5_4: summarizeValidation（v2 校验结果可视化单行摘要）----
+test("s2v5_4: summarizeValidation 通过 → v2 OK 摘要", async () => {
+  const fsImpl = makeFakeFs({
+    [path.join(TASK_DIR, "done.flag")]: "",
+    [path.join(TASK_DIR, "result.json")]: JSON.stringify({ status: "done", exit: 0 }),
+  });
+  const r = await validateResult({ taskDir: TASK_DIR, task: validTask(), fsImpl });
+  assert.equal(r.ok, true);
+  const s = summarizeValidation(r);
+  assert.ok(s.includes("v2 OK"));
+});
+
+test("s2v5_4: summarizeValidation 失败 → v2 FAIL[errorCode] + 首错", async () => {
+  const fsImpl = makeFakeFs({ [path.join(TASK_DIR, "result.json")]: "{ bad" });
+  const r = await validateResult({ taskDir: TASK_DIR, task: validTask(), fsImpl });
+  assert.equal(r.ok, false);
+  const s = summarizeValidation(r);
+  assert.ok(s.startsWith("v2 FAIL[result-corrupt]"), s);
+  assert.ok(s.includes("result.json"));
+});
+
+test("s2v5_4: summarizeValidation null/空输入容错", () => {
+  assert.ok(summarizeValidation(null).includes("未执行"));
+  assert.ok(summarizeValidation({ ok: true }).includes("v2 OK"));
 });
