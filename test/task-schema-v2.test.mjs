@@ -459,3 +459,43 @@ test("s2v3_2: 执行中 done.flag 误放 out/ → 仍报 misplaced（契约违�
   assert.equal(details.doneFlagErrorCode, "done-flag-misplaced");
   assert.ok(errors.some((e) => e.includes("misplaced")));
 });
+
+// s2v3_1 补强（Refactor 意见：未定义 vs 显式 [] 语义区分）
+test("s2v3_1: kind=review 显式 expectArtifacts:[] → 不自动注入（尊重显式空）", async () => {
+  const fsImpl = makeFakeFs({
+    [path.join(TASK_DIR, "done.flag")]: "",
+    [path.join(TASK_DIR, "result.json")]: JSON.stringify({ status: "done", exit: 0 }),
+  });
+  const r = await validateResult({ taskDir: TASK_DIR, task: validTask({ kind: "review", expectArtifacts: [] }), fsImpl });
+  assert.equal(r.ok, true); // 显式 [] = 用户明确不要产物校验
+  assert.equal(r.details.artifacts.length, 0);
+});
+
+test("s2v3_1: kind=review 未定义 expectArtifacts 与显式 [] 语义不同（未定义 → 注入 review.md）", async () => {
+  const undef = makeFakeFs({
+    [path.join(TASK_DIR, "done.flag")]: "",
+    [path.join(TASK_DIR, "result.json")]: JSON.stringify({ status: "done", exit: 0 }),
+  });
+  const r1 = await validateResult({ taskDir: TASK_DIR, task: validTask({ kind: "review" }), fsImpl: undef });
+  assert.equal(r1.ok, false); // 未定义 → 注入 review.md → 缺产物失败
+  assert.ok(r1.details.artifacts.some((a) => a.name === "review.md" && a.exists === false));
+  const empty = makeFakeFs({
+    [path.join(TASK_DIR, "done.flag")]: "",
+    [path.join(TASK_DIR, "result.json")]: JSON.stringify({ status: "done", exit: 0 }),
+  });
+  const r2 = await validateResult({ taskDir: TASK_DIR, task: validTask({ kind: "review", expectArtifacts: [] }), fsImpl: empty });
+  assert.equal(r2.ok, true);
+});
+
+test("s2v3_1: 跨平台路径（path.join 构造 out/review.md key）下 review 默认产物校验一致", async () => {
+  // 用 path.join 构造（Windows 反斜杠 / POSIX 正斜杠均正确解析——validateResult 内部同 path.join）
+  const winStyle = path.join(TASK_DIR, "out", "review.md");
+  const fsImpl = makeFakeFs({
+    [path.join(TASK_DIR, "done.flag")]: "",
+    [path.join(TASK_DIR, "result.json")]: JSON.stringify({ status: "done", exit: 0 }),
+    [winStyle]: "VERDICT: APPROVED",
+  });
+  const r = await validateResult({ taskDir: TASK_DIR, task: validTask({ kind: "review" }), fsImpl });
+  assert.equal(r.ok, true);
+  assert.ok(r.details.artifacts.some((a) => a.name === "review.md" && a.exists === true));
+});
