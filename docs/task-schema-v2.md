@@ -40,7 +40,7 @@
 ```sh
 node scripts/task-schema-cli.mjs validate-task <task.json>     # exit 0/1/2
 node scripts/task-schema-cli.mjs validate-result <taskDir>     # done.flag 根 + result.json(errorCode) + expectArtifacts + acceptanceScript
-node scripts/task-schema-cli.mjs report <taskDir|parentDir>    # 单任务或父目录批量；末尾参数 'md' 输出 Markdown 表
+node scripts/task-schema-cli.mjs report <taskDir|parentDir>    # 单任务或父目录批量；末尾参数 'md' 输出 Markdown 表；'--verbose' 附完整明细
 node scripts/task-schema-cli.mjs recover <tasksParentDir>      # s2v5_1: watchdog 崩溃/重启恢复——悬挂任务补 result / 列 re-run
 ```
 
@@ -49,6 +49,11 @@ node scripts/task-schema-cli.mjs recover <tasksParentDir>      # s2v5_1: watchdo
 - 导出 `RESULT_ERROR_CODES = [result-missing, result-corrupt, result-invalid]`、`DONE_FLAG_ERROR_CODES = [done-flag-misplaced, done-flag-missing]`
 - `validateResultText`/`validateResult` 返回 `errorCode`（null=合法）；errors 带 `[errorCode]` 前缀
 - `validateResult.details` 增 `resultErrorCode / doneFlagErrorCode`
+
+## 4c. report 分组汇总（s2v5_2）
+
+- 批量 report 默认输出 `summary`：按状态分组（done/pending/failed）计数 + `firstPending/firstFailed`（每组首条任务的 task/errorCode/firstError）——mixed 批次一眼可读；`--verbose` 附完整 `results` 明细。
+- 状态归类：ok → done；`resultPending`（result.json 缺失）→ pending；其余 → failed。
 
 ## 5. 集成
 

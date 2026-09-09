@@ -49,6 +49,42 @@ async function checkTaskDir(taskDir) {
   }
 }
 
+// s2v5_2: 把单任务校验结果归类为一眼可读的状态（done/pending/failed）
+//   done    = 全部通过（ok）
+//   pending = result.json 缺失（执行中/未落盘——watchdog 重启恢复场景）
+//   failed  = 结构/产物校验失败（含 misplaced/missing/errorCode 违例）
+function classifyRowStatus(r) {
+  if (r.ok) return 'done'
+  if (r.resultPending) return 'pending'
+  return 'failed'
+}
+
+// s2v5_2: report 分组汇总——各状态计数 + 每组首个问题原因（一眼可读，不淹没在长 JSON 里）
+function buildSummary(results) {
+  const groups = { done: [], pending: [], failed: [] }
+  for (const r of results) groups[classifyRowStatus(r)].push(r)
+  const firstIssue = (list) => {
+    if (!list.length) return null
+    const r = list[0]
+    return {
+      task: path.basename(r.taskDir),
+      ok: r.ok,
+      resultErrorCode: r.resultErrorCode ?? null,
+      doneFlagErrorCode: r.doneFlagErrorCode ?? null,
+      firstError: (r.errors && r.errors[0]) || null,
+    }
+  }
+  return {
+    total: results.length,
+    done: groups.done.length,
+    pending: groups.pending.length,
+    failed: groups.failed.length,
+    okAll: results.every((r) => r.ok),
+    firstPending: firstIssue(groups.pending),
+    firstFailed: firstIssue(groups.failed),
+  }
+}
+
 if (cmd === 'validate-task') {
   let task
   try { task = readJson(target) } catch (e) { fail(`无法读取 task.json: ${e.message}`) }
@@ -67,11 +103,22 @@ if (cmd === 'validate-task') {
   const results = []
   for (const d of dirs) results.push(await checkTaskDir(d))
   const okAll = results.every((r) => r.ok)
-  const md = ['# cc-task-schema v2 report', '', `| task | status | resultErrorCode | doneFlagErrorCode | artifacts |`, '|---|---|---|---|---|']
+  // s2v5_2: 分组汇总（done/pending/failed + 首条问题）——一眼可读；--verbose 保留完整 results
+  const summary = buildSummary(results)
+  const verbose = process.argv.includes('--verbose')
+  const md = [
+    '# cc-task-schema v2 report',
+    '',
+    `> mixed 汇总：total=${summary.total} · done=${summary.done} · pending=${summary.pending} · failed=${summary.failed}${okAll ? ' · ✅ 全部通过' : ''}`,
+    '',
+    `| task | status | resultErrorCode | doneFlagErrorCode | artifacts |`,
+    '|---|---|---|---|---|',
+  ]
   for (const r of results) {
-    md.push(`| ${path.basename(r.taskDir)} | ${r.ok ? 'OK' : 'FAIL'} | ${r.resultErrorCode || '-'} | ${r.doneFlagErrorCode || '-'} | ${(r.artifacts || []).map((a) => `${a.name}:${a.exists ? '✓' : '✗'}`).join(' ') || '-'} |`)
+    md.push(`| ${path.basename(r.taskDir)} | ${classifyRowStatus(r)} | ${r.resultErrorCode || '-'} | ${r.doneFlagErrorCode || '-'} | ${(r.artifacts || []).map((a) => `${a.name}:${a.exists ? '✓' : '✗'}`).join(' ') || '-'} |`)
   }
-  const fmt = process.argv[4] === 'md' ? md.join('\n') : JSON.stringify({ cmd: 'report', ok: okAll, count: results.length, results }, null, 2)
+  const payload = { cmd: 'report', ok: okAll, count: results.length, summary, ...(verbose ? { results } : {}) }
+  const fmt = process.argv[4] === 'md' ? md.join('\n') : JSON.stringify(payload, null, 2)
   console.log(fmt)
   process.exit(okAll ? 0 : 1)
 } else if (cmd === 'recover') {

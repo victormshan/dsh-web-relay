@@ -96,3 +96,71 @@ test("s2v5_1 CLI recover: 宸叉甯稿畬鎴愮殑浠诲姟涓嶈Е纰帮紙d
   const after = await fsp.readFile(path.join(dirD, "result.json"), "utf8");
   assert.equal(after, before); // 鍐呭鏈鏀瑰啓
 });
+
+// ---- s2v5_2: CLI report mixed 批次分组汇总 ----
+async function runReport(parentDir, extra = []) {
+  try {
+    const { stdout } = await execFileP(process.execPath, [CLI, "report", parentDir, ...extra], { encoding: "utf8" });
+    return JSON.parse(stdout);
+  } catch (err) {
+    // report 存在 failed 任务时 exit code 1（属预期）——stdout 仍是完整 JSON
+    return JSON.parse(err.stdout);
+  }
+}
+
+test("s2v5_2 CLI report: mixed 批次按状态分组汇总（done/pending/failed + 计数 + 首条问题）", async (t) => {
+  const root = await fsp.mkdtemp(path.join(os.tmpdir(), "cc-report-"));
+  t.after(() => fsp.rm(root, { recursive: true, force: true }));
+
+  // done：完整通过
+  const dirA = path.join(root, "mix-done");
+  await fsp.mkdir(path.join(dirA, "out"), { recursive: true });
+  await fsp.writeFile(path.join(dirA, "task.json"), JSON.stringify(makeTask("mix-done")));
+  await fsp.writeFile(path.join(dirA, "done.flag"), "");
+  await fsp.writeFile(path.join(dirA, "out", "review.md"), "VERDICT: APPROVED");
+  await fsp.writeFile(path.join(dirA, "result.json"), JSON.stringify({ status: "done", exit: 0 }));
+
+  // pending：无 result.json（执行中）
+  const dirB = path.join(root, "mix-pending");
+  await fsp.mkdir(path.join(dirB, "out"), { recursive: true });
+  await fsp.writeFile(path.join(dirB, "task.json"), JSON.stringify(makeTask("mix-pending")));
+  await fsp.writeFile(path.join(dirB, "out", "review.md"), "VERDICT: APPROVED");
+
+  // failed：done.flag 放 out/（misplaced）
+  const dirC = path.join(root, "mix-failed");
+  await fsp.mkdir(path.join(dirC, "out"), { recursive: true });
+  await fsp.writeFile(path.join(dirC, "task.json"), JSON.stringify(makeTask("mix-failed")));
+  await fsp.writeFile(path.join(dirC, "out", "done.flag"), "");
+  await fsp.writeFile(path.join(dirC, "result.json"), JSON.stringify({ status: "done", exit: 0 }));
+
+  const out = await runReport(root);
+  assert.equal(out.ok, false);
+  assert.equal(out.count, 3);
+  assert.equal(out.summary.total, 3);
+  assert.equal(out.summary.done, 1);
+  assert.equal(out.summary.pending, 1);
+  assert.equal(out.summary.failed, 1);
+  assert.equal(out.summary.okAll, false);
+  assert.equal(out.summary.firstPending.task, "mix-pending");
+  assert.equal(out.summary.firstFailed.task, "mix-failed");
+  assert.equal(out.summary.firstFailed.doneFlagErrorCode, "done-flag-misplaced");
+  // 默认不携带完整 results（防刷屏）；--verbose 才带
+  assert.equal(out.results, undefined);
+});
+
+test("s2v5_2 CLI report: --verbose 保留完整明细", async (t) => {
+  const root = await fsp.mkdtemp(path.join(os.tmpdir(), "cc-report2-"));
+  t.after(() => fsp.rm(root, { recursive: true, force: true }));
+  const dirA = path.join(root, "v-done");
+  await fsp.mkdir(path.join(dirA, "out"), { recursive: true });
+  await fsp.writeFile(path.join(dirA, "task.json"), JSON.stringify(makeTask("v-done")));
+  await fsp.writeFile(path.join(dirA, "done.flag"), "");
+  await fsp.writeFile(path.join(dirA, "out", "review.md"), "VERDICT: APPROVED");
+  await fsp.writeFile(path.join(dirA, "result.json"), JSON.stringify({ status: "done", exit: 0 }));
+
+  const out = await runReport(root, ["--verbose"]);
+  assert.equal(out.summary.done, 1);
+  assert.ok(Array.isArray(out.results));
+  assert.equal(out.results.length, 1);
+  assert.equal(out.results[0].doneFlagAtRoot, true);
+});
