@@ -103,8 +103,9 @@ test('buildReviewTask：返回结构含 kind/taskId/prompt/outputDir', () => {
   assert.equal(task.taskId, 'rev-test01');
   assert.match(task.prompt, /VERDICT/);
   assert.ok(task.prompt.includes('rev-test01'));
-  assert.ok(task.outputDir.includes('rev-test01'));
-  assert.equal(task.outputDir, '/mnt/d/cc-tasks/tasks/rev-test01/out');
+  // s2v5_3: outputDir 是任务根内相对子路径（v2 schema 硬校验——绝对路径被 cc-watchdog REJECT）
+  assert.equal(task.outputDir, 'out');
+  assert.ok(task.prompt.includes('/mnt/d/cc-tasks/tasks/rev-test01/out')); // 绝对落盘路径只在 prompt 提示 Claude
   assert.deepEqual(task.refs, []);
   assert.match(task.title, /step-2/);
 });

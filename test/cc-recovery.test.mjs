@@ -164,3 +164,108 @@ test("s2v5_2 CLI report: --verbose 保留完整明细", async (t) => {
   assert.equal(out.results.length, 1);
   assert.equal(out.results[0].doneFlagAtRoot, true);
 });
+
+// ---- s2v5_3: cc-watchdog REJECT 隔离（queue/.invalid/）人工复检闭环 ----
+function makeInvalidTask(taskId) {
+  // 绝对 outputDir 违例（真实 .invalid 13 例根因——buildReviewTask 旧版硬编码绝对路径）
+  return {
+    taskId,
+    kind: "review",
+    title: `非法任务 ${taskId}`,
+    prompt: "执行并产出 out/review.md + 根 done.flag",
+    outputDir: `/mnt/d/cc-tasks/tasks/${taskId}/out`,
+    expectArtifacts: ["review.md"],
+  };
+}
+
+function fixTask(task) {
+  return { ...task, outputDir: "out" }; // 人工修复：绝对路径 → 相对子路径
+}
+
+async function runInvalid(args, opts = {}) {
+  try {
+    const { stdout } = await execFileP(process.execPath, [CLI, "invalid", ...args], { encoding: "utf8" });
+    return { code: 0, out: JSON.parse(stdout) };
+  } catch (err) {
+    return { code: err.code || 1, out: JSON.parse(err.stdout) };
+  }
+}
+
+test("s2v5_3 invalid 复检闭环: list 原因可查 / revalidate / recover 重入队", async (t) => {
+  const root = await fsp.mkdtemp(path.join(os.tmpdir(), "cc-invalid-"));
+  t.after(() => fsp.rm(root, { recursive: true, force: true }));
+  const invalidDir = path.join(root, "queue", ".invalid");
+  await fsp.mkdir(invalidDir, { recursive: true });
+
+  // 两个 REJECT 隔离任务（绝对 outputDir 违例——真实 13 例根因）
+  const f1 = "rev-bad01.1789000000.task.json";
+  const f2 = "rev-bad02.1789000001.task.json";
+  await fsp.writeFile(path.join(invalidDir, f1), JSON.stringify(makeInvalidTask("rev-bad01")));
+  await fsp.writeFile(path.join(invalidDir, f2), JSON.stringify(makeInvalidTask("rev-bad02")));
+
+  // list：原因可查（outputDir 越界）
+  const list = await runInvalid(["list", root]);
+  assert.equal(list.code, 0);
+  assert.equal(list.out.count, 2);
+  assert.ok(list.out.rows.every((r) => r.validNow === false));
+  assert.ok(list.out.rows[0].rejectReason.some((e) => e.includes("outputDir 越界")));
+
+  // revalidate：未修复 → 失败
+  const rv1 = await runInvalid(["revalidate", root, f1]);
+  assert.equal(rv1.code, 1);
+  assert.equal(rv1.out.ok, false);
+
+  // 人工修复 f1（绝对 → 相对）→ revalidate 通过
+  const fixed = fixTask(makeInvalidTask("rev-bad01"));
+  await fsp.writeFile(path.join(invalidDir, f1), JSON.stringify(fixed));
+  const rv2 = await runInvalid(["revalidate", root, f1]);
+  assert.equal(rv2.code, 0);
+  assert.equal(rv2.out.ok, true);
+
+  // recover：修复后的 f1 移回 queue/（重入待处理区）
+  const rec = await runInvalid(["recover", root, f1]);
+  assert.equal(rec.code, 0);
+  assert.equal(rec.out.ok, true);
+  assert.equal(rec.out.restoredTo, path.join(root, "queue", "rev-bad01.task.json"));
+  await fsp.access(path.join(root, "queue", "rev-bad01.task.json")); // 已重入队
+  await assert.rejects(() => fsp.access(path.join(invalidDir, f1))); // .invalid 已移除
+
+  // recover 未修复的 f2 → 拒绝（留在 .invalid）
+  const rec2 = await runInvalid(["recover", root, f2]);
+  assert.equal(rec2.code, 1);
+  assert.equal(rec2.out.ok, false);
+  await fsp.access(path.join(invalidDir, f2));
+});
+
+test("s2v5_3 invalid clean: 未 approved 拒删；approve 后 clean 才回收", async (t) => {
+  const root = await fsp.mkdtemp(path.join(os.tmpdir(), "cc-invalid2-"));
+  t.after(() => fsp.rm(root, { recursive: true, force: true }));
+  const invalidDir = path.join(root, "queue", ".invalid");
+  await fsp.mkdir(invalidDir, { recursive: true });
+  const fA = "rev-discard01.1789000100.task.json";
+  const fB = "rev-discard02.1789000101.task.json";
+  await fsp.writeFile(path.join(invalidDir, fA), JSON.stringify(makeInvalidTask("rev-discard01")));
+  await fsp.writeFile(path.join(invalidDir, fB), JSON.stringify(makeInvalidTask("rev-discard02")));
+
+  // 未 approved → clean 拒删（exit 1，refused 列出）
+  const c1 = await runInvalid(["clean", root]);
+  assert.equal(c1.code, 1);
+  assert.deepEqual(c1.out.deleted, []);
+  assert.equal(c1.out.refused.length, 2);
+  await fsp.access(path.join(invalidDir, fA));
+  await fsp.access(path.join(invalidDir, fB));
+
+  // 只 approve fA → clean fA 成功、fB 仍拒
+  const ap = await runInvalid(["approve", root, fA]);
+  assert.equal(ap.code, 0);
+  const c2 = await runInvalid(["clean", root, fA]);
+  assert.equal(c2.code, 0);
+  assert.deepEqual(c2.out.deleted, [fA]);
+  await assert.rejects(() => fsp.access(path.join(invalidDir, fA)));
+  await fsp.access(path.join(invalidDir, fB)); // fB 未 approved 仍在
+
+  // 全量 clean：fB 仍无标记 → refused
+  const c3 = await runInvalid(["clean", root]);
+  assert.equal(c3.code, 1);
+  assert.equal(c3.out.refused.length, 1);
+});

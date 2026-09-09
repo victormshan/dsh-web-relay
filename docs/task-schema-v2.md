@@ -1,6 +1,6 @@
 # cc-task-schema v2（三方任务契约库）
 
-> 版本：s2v4（AutoIteration expr-2026-09-09_12-30-09 V2/6）
+> 版本：s2v5（AutoIteration expr-2026-09-09_12-30-09 V5/6）
 > 用途：DSH 主 agent → Claude Code（D:\cc-tasks 派发）任务单契约的**严格机器校验**——修 v4.9 事故（done.flag 误放 out/ 致 runner 误判 failed）。
 
 ## 1. task.json 字段规范（TASK_SCHEMA_V2）
@@ -96,3 +96,17 @@ node scripts/task-schema-cli.mjs recover <tasksParentDir>      # s2v5_1: watchdo
   - result.json 结构非法 → failed + inspect；status=done 但缺根 flag → done-flag-missing 违例。
 - **CLI recover**：`task-schema-cli.mjs recover <tasksParentDir>` 批量执行恢复动作——补写 result（recovered:true 标记）/列 re-run/保留 untouched，输出 JSON 汇总。
 - **测试**：`test/cc-recovery.test.mjs` 2 例（真实临时目录）+ `test/task-schema-v2.test.mjs` 恢复分类 5 例（fake fs）。
+
+## 10. cc-watchdog REJECT 隔离复检闭环（s2v5_3）
+
+- **根因修复（outputDir 相对化）**：`lib/cc-channel.js buildReviewTask` 的 `outputDir` 曾硬编码绝对路径 `/mnt/d/cc-tasks/tasks/<id>/out`——违反 v2 schema（outputDir 必须是任务根内相对子路径），导致**每个 cc 审核任务都被 validate-task 门控 REJECT**（.invalid/ 13 例实证）。现改为相对 `out`；绝对落盘路径（/mnt/d/...）仅在 prompt 里提示 Claude，不进 task.json 字段。任务契约从此可正常过 v2 门控。
+- **CLI invalid 复检闭环**（人工处理 REJECT 隔离任务 queue/.invalid/）：
+  ```sh
+  node scripts/task-schema-cli.mjs invalid list <ccTasksRoot>        # 列出隔离任务 + reject 原因（validate-task 重放）
+  node scripts/task-schema-cli.mjs invalid revalidate <ccTasksRoot> <file>  # 修复后重跑（exit 0=可恢复）
+  node scripts/task-schema-cli.mjs invalid recover <ccTasksRoot> <file>     # revalidate 通过 → 移回 queue/ 重入队
+  node scripts/task-schema-cli.mjs invalid approve <ccTasksRoot> <file>     # 人工确认废弃 → 打 .approved 标记（幂等）
+  node scripts/task-schema-cli.mjs invalid clean <ccTasksRoot> [file]       # 仅删已 approved；未 approved 拒删（exit 1）
+  ```
+- **纪律**：REJECT 隔离的任务不自动回收；人工复检三选一——修复后 revalidate+recover 重入队 / approve 废弃后 clean / 保留待查。cc-watchdog 只负责 REJECT 隔离，不自动删。
+- **测试**：`test/cc-recovery.test.mjs` invalid 复检 2 例（真实临时目录：list 原因/revalidate/recover 重入队/未 approved 拒删/approve 后 clean）。
