@@ -1,6 +1,6 @@
 # cc-task-schema v2（三方任务契约库）
 
-> 版本：s2v3（AutoIteration expr-2026-09-09_12-30-09 V2/6）
+> 版本：s2v4（AutoIteration expr-2026-09-09_12-30-09 V2/6）
 > 用途：DSH 主 agent → Claude Code（D:\cc-tasks 派发）任务单契约的**严格机器校验**——修 v4.9 事故（done.flag 误放 out/ 致 runner 误判 failed）。
 
 ## 1. task.json 字段规范（TASK_SCHEMA_V2）
@@ -72,3 +72,10 @@ node scripts/task-schema-cli.mjs report <taskDir|parentDir>    # 单任务或父
 | 期望产物 | 无 | expectArtifacts 存在性硬校验 |
 | 验收 | Claude 自判 | acceptanceScript 可选执行钩子（CLI 内联）|
 | 派发入口 | 无校验 | cc-channel validateTask 前置 + cc-watchdog REJECT 隔离 |
+
+
+## 8. 派发纪律与自动消费（s2v4）
+
+- **refs 用当前源路径**：派发 Claude 任务时 task refs/prompt 引用的源文件路径必须是**当前仓库路径**（s2v2-errorcode 教训：refs 写了迁移前旧路径 /mnt/d/DSH/... 致 Claude 取不到源、产出偏离现状——派发前核对 DSH_RELAY_REPO 当前值）。
+- **主 agent poll 自动消费**：cc 任务 poll 完成（done）后 index.js runCcReviewTask 自动 validateResult——done.flag 根/result.json/review 默认产物 out/review.md 不合格即拦（不进 approved）；校验器异常软跳过（readReviewOut 兜底）。
+- **install 契约对齐**：install-new-env 产物（task.json 契约形态）与 v2 门控一致（kind/taskId/prompt 必填等）。

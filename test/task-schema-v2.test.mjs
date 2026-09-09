@@ -499,3 +499,23 @@ test("s2v3_1: 跨平台路径（path.join 构造 out/review.md key）下 review 
   assert.equal(r.ok, true);
   assert.ok(r.details.artifacts.some((a) => a.name === "review.md" && a.exists === true));
 });
+
+// ---- s2v4_2: 空产物边缘 + 重启恢复 errorCode 稳定 ----
+test("s2v4_2: 实现类（无 expectArtifacts）无 out/ 目录但 done.flag 根在 → 通过（不要求产物）", async () => {
+  const fsImpl = makeFakeFs({
+    [path.join(TASK_DIR, "done.flag")]: "",
+    [path.join(TASK_DIR, "result.json")]: JSON.stringify({ status: "done", exit: 0 }),
+    // 无 out/ 目录、无产物
+  });
+  const r = await validateResult({ taskDir: TASK_DIR, task: validTask({ kind: "implement" }), fsImpl });
+  assert.equal(r.ok, true);
+  assert.equal(r.details.artifacts.length, 0);
+});
+
+test("s2v4_2: 跨重启 in-progress（无 done.flag 无 result.json）errorCode 稳定 null（不误报 missing）", async () => {
+  const fsImpl = makeFakeFs({}); // 任务执行中（watchdog 重启扫描场景）
+  const r = await validateResult({ taskDir: TASK_DIR, task: validTask(), fsImpl });
+  assert.equal(r.details.doneFlagErrorCode, null);
+  assert.equal(r.details.resultErrorCode, "result-missing"); // result 缺失提示（pending），done.flag 不误报
+  assert.ok(!r.errors.some((e) => e.includes("done-flag-missing")));
+});
