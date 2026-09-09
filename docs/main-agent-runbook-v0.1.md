@@ -69,7 +69,7 @@
 3. `node --check` 所有改动文件；全量 `node --test test/*.test.js` 全绿（传文件列表，勿用目录参数）。
    3.5 若本次改动涉及 docs/skills/capabilities，运行能力验证：`node scripts/verify-capabilities.mjs`，全绿后再继续。
 4. 三副本同步：`D:\dsh-web-relay`（源）/ `C:\Users\Administrator\.dsh\profiles\web\node_modules\dsh-web-relay`（运行）/ `C:\Users\Administrator\web-relay\dsh-web-relay`（工作副本）。
-5. git（在 D:\DSH）：
+5. git（在当前源仓库 D:\dsh-web-relay，origin=victormshan/dsh-web-relay；旧 monorepo D:\DSH\dsh-web-relay 已 ARCHIVED 勿再提交）：
    - 只 add 本任务范围路径（勿误纳 dsh-web-gemini-ext 等未提交改动；可先 stash）。
    - commit → tag `v3.x.y` → `git push origin main --tags`。
    - 远端落后先 `git pull --rebase origin main`（未提交改动需先 stash，push 后 `ls-remote --tags origin` 核对 tag 在列）。
