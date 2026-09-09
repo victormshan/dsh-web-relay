@@ -4,13 +4,14 @@
 //   node scripts/task-schema-cli.mjs validate-task <task.json>
 //   node scripts/task-schema-cli.mjs validate-result <taskDir>   （done.flag 根/result.json/expectArtifacts/acceptanceScript）
 //   node scripts/task-schema-cli.mjs report <taskDir|parentDir>  （单任务，或父目录批量 JSON/Markdown 汇总）
+//   node scripts/task-schema-cli.mjs recover <tasksParentDir>    （s2v5_1: watchdog 重启恢复——悬挂任务补 result / 列 re-run）
 // exit code: 0 通过 / 1 校验失败 / 2 用法错误
-import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs'
-import { validateTask, validateResultText, validateResult, runAcceptanceScript } from '../lib/task-schema-v2.mjs'
+import { readFileSync, readdirSync, existsSync, statSync, writeFileSync } from 'node:fs'
+import { validateTask, validateResultText, validateResult, runAcceptanceScript, classifyTaskRecovery, recoveryAction } from '../lib/task-schema-v2.mjs'
 
 const [, , cmd, target] = process.argv
 function fail(msg, code = 2) { console.error(msg); process.exit(code) }
-if (!cmd || !target) fail('用法: task-schema-cli.mjs validate-task <task.json> | validate-result <taskDir> | report <taskDir|parentDir>')
+if (!cmd || !target) fail('用法: task-schema-cli.mjs validate-task <task.json> | validate-result <taskDir> | report <taskDir|parentDir> | recover <tasksParentDir>')
 
 const path = (await import('node:path')).default
 // BOM 防御（PS5.1 写 UTF8 带 BOM 会破坏 JSON.parse——lesson 004）
@@ -73,6 +74,36 @@ if (cmd === 'validate-task') {
   const fmt = process.argv[4] === 'md' ? md.join('\n') : JSON.stringify({ cmd: 'report', ok: okAll, count: results.length, results }, null, 2)
   console.log(fmt)
   process.exit(okAll ? 0 : 1)
+} else if (cmd === 'recover') {
+  // s2v5_1: watchdog 崩溃/重启恢复——扫描 tasks/ 下悬挂任务，执行恢复动作：
+  //   done + needsResultWrite → 补写 result.json（runner 写 result 前被杀）
+  //   in-progress → 列出待 re-run（调用方重派 runner）
+  //   failed → 原样保留（不误改）
+  const { promises: fsp } = await import('node:fs')
+  const isTaskDir = existsSync(path.join(target, 'task.json'))
+  const dirs = isTaskDir ? [target] : readdirSync(target).filter((d) => existsSync(path.join(target, d, 'task.json'))).map((d) => path.join(target, d))
+  if (dirs.length === 0) fail(`无任务目录: ${target}`)
+  const recovered = []
+  const rerun = []
+  const untouched = []
+  for (const d of dirs) {
+    let task = {}
+    try { task = readJson(path.join(d, 'task.json')) } catch { /* task.json 缺失 → 无法恢复，跳过 */ }
+    const cls = await classifyTaskRecovery({ taskDir: d, task })
+    const action = recoveryAction(cls)
+    if (action === 'write-result') {
+      // 补写 result.json：终态由根 done.flag 决定（契约完成），恢复 runner 被杀中断的收尾
+      const resultJson = JSON.stringify({ status: 'done', recovered: true, at: new Date().toISOString(), reason: 'done.flag at root, result.json missing (runner killed) — recovered by watchdog' }, null, 2)
+      writeFileSync(path.join(d, 'result.json'), resultJson, 'utf8')
+      recovered.push({ taskDir: d, state: cls.state, action })
+    } else if (action === 're-run') {
+      rerun.push({ taskDir: d, state: cls.state, action })
+    } else {
+      untouched.push({ taskDir: d, state: cls.state, action, reasons: cls.reasons })
+    }
+  }
+  console.log(JSON.stringify({ cmd: 'recover', recovered, rerun, untouched, summary: { recovered: recovered.length, rerun: rerun.length, untouched: untouched.length } }, null, 2))
+  process.exit(0)
 } else {
   fail(`未知命令: ${cmd}`)
 }

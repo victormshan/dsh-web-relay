@@ -12,6 +12,8 @@ import {
   validateResultText,
   validateResult,
   runAcceptanceScript,
+  classifyTaskRecovery,
+  recoveryAction,
 } from "../lib/task-schema-v2.mjs";
 
 /** 构造一个基于内存 Map 的 fake fsImpl：files 的 key 是路径，value 是文件内容。 */
@@ -518,4 +520,52 @@ test("s2v4_2: 跨重启 in-progress（无 done.flag 无 result.json）errorCode 
   assert.equal(r.details.doneFlagErrorCode, null);
   assert.equal(r.details.resultErrorCode, "result-missing"); // result 缺失提示（pending），done.flag 不误报
   assert.ok(!r.errors.some((e) => e.includes("done-flag-missing")));
+});
+
+// ---- s2v5_1: watchdog 崩溃/重启恢复分类（classifyTaskRecovery / recoveryAction）----
+test("s2v5_1: done.flag 根在 + result.json 缺失（runner 写 result 前被杀）→ done + needsResultWrite", async () => {
+  const fsImpl = makeFakeFs({ [path.join(TASK_DIR, "done.flag")]: "" });
+  const c = await classifyTaskRecovery({ taskDir: TASK_DIR, task: validTask(), fsImpl });
+  assert.equal(c.state, "done");
+  assert.equal(c.needsResultWrite, true);
+  assert.equal(c.doneFlagErrorCode, null);
+  assert.equal(recoveryAction(c), "write-result");
+});
+
+test("s2v5_1: done.flag 根在 + result.json done → done，无需补写", async () => {
+  const fsImpl = makeFakeFs({
+    [path.join(TASK_DIR, "done.flag")]: "",
+    [path.join(TASK_DIR, "result.json")]: JSON.stringify({ status: "done", exit: 0 }),
+  });
+  const c = await classifyTaskRecovery({ taskDir: TASK_DIR, task: validTask(), fsImpl });
+  assert.equal(c.state, "done");
+  assert.equal(c.needsResultWrite, false);
+  assert.equal(recoveryAction(c), "none");
+});
+
+test("s2v5_1: done.flag 在 out/（misplaced）→ failed（契约违例恒报）", async () => {
+  const fsImpl = makeFakeFs({
+    [path.join(TASK_DIR, "out", "done.flag")]: "",
+    [path.join(TASK_DIR, "result.json")]: JSON.stringify({ status: "done", exit: 0 }),
+  });
+  const c = await classifyTaskRecovery({ taskDir: TASK_DIR, task: validTask(), fsImpl });
+  assert.equal(c.state, "failed");
+  assert.equal(c.doneFlagErrorCode, "done-flag-misplaced");
+  assert.equal(recoveryAction(c), "inspect");
+});
+
+test("s2v5_1: 无 done.flag 无 result.json（runner 被杀执行中）→ in-progress + re-run，不误报 done/failed", async () => {
+  const fsImpl = makeFakeFs({});
+  const c = await classifyTaskRecovery({ taskDir: TASK_DIR, task: validTask(), fsImpl });
+  assert.equal(c.state, "in-progress");
+  assert.equal(c.doneFlagErrorCode, null);
+  assert.equal(recoveryAction(c), "re-run");
+});
+
+test("s2v5_1: result.json 非法 + 无根 done.flag → failed + inspect", async () => {
+  const fsImpl = makeFakeFs({ [path.join(TASK_DIR, "result.json")]: "{ not json" });
+  const c = await classifyTaskRecovery({ taskDir: TASK_DIR, task: validTask(), fsImpl });
+  assert.equal(c.state, "failed");
+  assert.equal(c.resultErrorCode, "result-corrupt");
+  assert.equal(recoveryAction(c), "inspect");
 });

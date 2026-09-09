@@ -41,6 +41,7 @@
 node scripts/task-schema-cli.mjs validate-task <task.json>     # exit 0/1/2
 node scripts/task-schema-cli.mjs validate-result <taskDir>     # done.flag 根 + result.json(errorCode) + expectArtifacts + acceptanceScript
 node scripts/task-schema-cli.mjs report <taskDir|parentDir>    # 单任务或父目录批量；末尾参数 'md' 输出 Markdown 表
+node scripts/task-schema-cli.mjs recover <tasksParentDir>      # s2v5_1: watchdog 崩溃/重启恢复——悬挂任务补 result / 列 re-run
 ```
 
 ## 4b. ErrorCode 分类（s2v2）
@@ -79,3 +80,14 @@ node scripts/task-schema-cli.mjs report <taskDir|parentDir>    # 单任务或父
 - **refs 用当前源路径**：派发 Claude 任务时 task refs/prompt 引用的源文件路径必须是**当前仓库路径**（s2v2-errorcode 教训：refs 写了迁移前旧路径 /mnt/d/DSH/... 致 Claude 取不到源、产出偏离现状——派发前核对 DSH_RELAY_REPO 当前值）。
 - **主 agent poll 自动消费**：cc 任务 poll 完成（done）后 index.js runCcReviewTask 自动 validateResult——done.flag 根/result.json/review 默认产物 out/review.md 不合格即拦（不进 approved）；校验器异常软跳过（readReviewOut 兜底）。
 - **install 契约对齐**：install-new-env 产物（task.json 契约形态）与 v2 门控一致（kind/taskId/prompt 必填等）。
+
+## 9. watchdog 崩溃/重启恢复（s2v5_1）
+
+- **场景**：cc-watchdog.sh / runner.sh 在执行中被外部 kill（或宿主崩溃），tasks/<id>/ 悬挂——result.json 缺失或 done.flag 位置异常。
+- **分类 API**：`lib/task-schema-v2.mjs` 新增 `classifyTaskRecovery({taskDir, task, fsImpl})` → `{state: 'done'|'in-progress'|'failed', needsResultWrite, resultErrorCode, doneFlagErrorCode, reasons}` + `recoveryAction(cls)` → `write-result | re-run | none | inspect`：
+  - **done.flag 根在** → 终态 done（契约完成）；若 result.json 缺失（runner 写 result 前被杀）→ `needsResultWrite=true` → **补写 result.json {status:done}** 即恢复。
+  - done.flag 在 out/（misplaced）→ failed（契约违例恒报，不自动改）。
+  - **无 done.flag 无 result.json** → in-progress（执行中被杀/未完成）→ **re-run runner**（不误报 done/failed——PENDING 语义跨重启稳定）。
+  - result.json 结构非法 → failed + inspect；status=done 但缺根 flag → done-flag-missing 违例。
+- **CLI recover**：`task-schema-cli.mjs recover <tasksParentDir>` 批量执行恢复动作——补写 result（recovered:true 标记）/列 re-run/保留 untouched，输出 JSON 汇总。
+- **测试**：`test/cc-recovery.test.mjs` 2 例（真实临时目录）+ `test/task-schema-v2.test.mjs` 恢复分类 5 例（fake fs）。
