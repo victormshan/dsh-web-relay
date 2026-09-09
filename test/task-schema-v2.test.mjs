@@ -249,7 +249,7 @@ test("validateResult: result.json 缺失 → ok=false 且 resultPending=true", a
     fsImpl,
   });
   assert.equal(ok, false);
-  assert.ok(errors.includes("result.json missing"));
+  assert.ok(errors.some((e) => e.includes("result.json missing")));
   assert.equal(details.resultPending, true);
 });
 
@@ -349,4 +349,60 @@ test("runAcceptanceScript: script 为空字符串直接报错，不调用 exec",
   assert.equal(ok, false);
   assert.equal(called, false);
   assert.ok(error.includes("script"));
+});
+
+// ---- s2v2_1: ErrorCode 分类 ----
+test("导出常量 RESULT_ERROR_CODES / DONE_FLAG_ERROR_CODES", async () => {
+  const m = await import("../lib/task-schema-v2.mjs");
+  assert.deepEqual(m.RESULT_ERROR_CODES, ["result-missing", "result-corrupt", "result-invalid"]);
+  assert.deepEqual(m.DONE_FLAG_ERROR_CODES, ["done-flag-misplaced", "done-flag-missing"]);
+});
+
+test("errorCode: result.json 缺失 → result-missing（details + 前缀）", async () => {
+  const fsImpl = makeFakeFs({ [path.join(TASK_DIR, "done.flag")]: "" });
+  const { ok, errors, details } = await validateResult({ taskDir: TASK_DIR, task: validTask(), fsImpl });
+  assert.equal(ok, false);
+  assert.equal(details.resultErrorCode, "result-missing");
+  assert.ok(errors.some((e) => e.startsWith("[result-missing]")));
+});
+
+test("errorCode: result.json 坏 JSON → result-corrupt", async () => {
+  const fsImpl = makeFakeFs({
+    [path.join(TASK_DIR, "done.flag")]: "",
+    [path.join(TASK_DIR, "result.json")]: "{bad json",
+  });
+  const { ok, errors, details } = await validateResult({ taskDir: TASK_DIR, task: validTask(), fsImpl });
+  assert.equal(ok, false);
+  assert.equal(details.resultErrorCode, "result-corrupt");
+  assert.ok(errors.some((e) => e.includes("[result-corrupt]")));
+});
+
+test("errorCode: result.json 结构非法 → result-invalid", async () => {
+  const fsImpl = makeFakeFs({
+    [path.join(TASK_DIR, "done.flag")]: "",
+    [path.join(TASK_DIR, "result.json")]: JSON.stringify({ status: "bogus" }),
+  });
+  const { ok, errors, details } = await validateResult({ taskDir: TASK_DIR, task: validTask(), fsImpl });
+  assert.equal(ok, false);
+  assert.equal(details.resultErrorCode, "result-invalid");
+});
+
+test("errorCode: done.flag 误放 out/ → done-flag-misplaced；双缺 → done-flag-missing", async () => {
+  const outOnly = makeFakeFs({ [path.join(TASK_DIR, "out", "done.flag")]: "", [path.join(TASK_DIR, "result.json")]: JSON.stringify({ status: "done", exit: 0 }) });
+  const r1 = await validateResult({ taskDir: TASK_DIR, task: validTask(), fsImpl: outOnly });
+  assert.equal(r1.details.doneFlagErrorCode, "done-flag-misplaced");
+  const none = makeFakeFs({ [path.join(TASK_DIR, "result.json")]: JSON.stringify({ status: "done", exit: 0 }) });
+  const r2 = await validateResult({ taskDir: TASK_DIR, task: validTask(), fsImpl: none });
+  assert.equal(r2.details.doneFlagErrorCode, "done-flag-missing");
+});
+
+test("errorCode: 合法 result → resultErrorCode/doneFlagErrorCode null", async () => {
+  const fsImpl = makeFakeFs({
+    [path.join(TASK_DIR, "done.flag")]: "",
+    [path.join(TASK_DIR, "result.json")]: JSON.stringify({ status: "done", exit: 0 }),
+  });
+  const { ok, details } = await validateResult({ taskDir: TASK_DIR, task: validTask(), fsImpl });
+  assert.equal(ok, true);
+  assert.equal(details.resultErrorCode, null);
+  assert.equal(details.doneFlagErrorCode, null);
 });
