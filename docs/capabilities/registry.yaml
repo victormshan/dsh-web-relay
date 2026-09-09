@@ -319,6 +319,39 @@
   status: approved
   version: 2
 
+- id: cc-task-schema-v2
+  name: cc-task-schema v2 任务契约严格校验（validateTask/validateResult + CLI + 三重门控 + watchdog 恢复）
+  category: tool
+  scope: cc-task-contract
+  source: docs/task-schema-v2.md
+  skill: null
+  trigger: 派发 Claude Code 任务（task.json 契约）、校验 cc 任务产物（done.flag 根/result.json/review.md）、watchdog/runner 侧门控排障、REJECT 隔离复检（.invalid/）、watchdog 崩溃重启恢复、v2 校验结果可视化（POST /steps/v2-check）
+  conflicts: []
+  verification:
+    - file-exists: docs/task-schema-v2.md
+    - content-contains:
+        file: docs/task-schema-v2.md
+        text: "watchdog 崩溃/重启恢复"
+    - content-contains:
+        file: docs/task-schema-v2.md
+        text: "REJECT 隔离复检闭环"
+    - file-exists: lib/task-schema-v2.mjs
+    - content-contains:
+        file: lib/task-schema-v2.mjs
+        text: "classifyTaskRecovery"
+    - file-exists: scripts/task-schema-cli.mjs
+    - content-contains:
+        file: lib/cc-channel.js
+        text: "outputDir"
+    - file-exists: test/task-schema-v2.test.mjs
+    - file-exists: test/cc-recovery.test.mjs
+    - content-contains:
+        file: docs/main-agent-lessons.json
+        text: "L-2026-0909-038"
+  lastVerified: 2026-09-09
+  status: approved
+  version: 1
+
 - id: host-self-restart-resume
   name: 无介入重启续跑与回合闭环（kill 后台 job + 同步 probe 查盘 + sessionId 自动唤醒 + 心跳兜底 + 回合自检纪律）
   category: platform

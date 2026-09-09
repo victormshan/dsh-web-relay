@@ -92,9 +92,13 @@
 | tag 体系 | v1.9.x 为旧协议时代命名，已弃 | 发布一律延续 v3.x |
 | 面板实际状态 | 直接改 steps.json 与面板状态以文件为准 | 编辑后刷新面板核对；high 步骤禁自批见 §2.2 |
 | 宿主运行版本 | 安装目录代码改动需重启宿主才生效 | 重启是用户动作（finalAcceptance） |
+| cc 任务 outputDir 绝对路径 | buildReviewTask 曾硬编码 `/mnt/d/cc-tasks/tasks/<id>/out` → 每个任务被 v2 门控 REJECT（.invalid/ 堆积） | outputDir 字段必须相对（"out"）；绝对路径只放 prompt（lesson 038） |
+| 宿主重启后延迟投递噪声 | aux 评审快照（/ask 落盘）被 bootResumeScan/心跳反复唤醒；陈旧信号分批延迟送达 | aux 快照逻辑归档（isTest=true+done）；收尾期实盘核对 steps.json + heartbeat.found 后 trace 留痕即可（lesson 039） |
+| 三副本同步遗漏 | 开发源 lib 改动 ≠ 宿主生效（运行副本跑旧代码）；work copy 镜像滞后 | 运行副本同步 + restart-now；收口时 work copy 全量镜像；scripts/docs/test 不进运行副本（lesson 040） |
 
 ## 7. 配套
 
 - 协议全文（外部 AI 侧）：`lib/index.js` 顶部 `WEB_RELAY_PROTOCOL` / `WEB_RELAY_EXTERNAL_AI_SKILL`。
+- cc-task-schema v2（cc 任务契约严格校验）：`docs/task-schema-v2.md`——validateTask/validateResult/CLI（validate-task/validate-result/report/recover/invalid）/watchdog 恢复/v2-check 端点/派发纪律；registry 条目 `cc-task-schema-v2`。
 - 能力沉淀：`docs/main-agent-lesson-schema-v0.1.md`。
 - 历史决策档案：`docs/dsh-web-relay-改进方案-2026-09-01.md`、`docs/dsh-web-relay-说明书.md`。

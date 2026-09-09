@@ -2,7 +2,7 @@
   "meta": {
     "schemaVersion": "0.1",
     "title": "dsh-web-relay 主 agent 语境能力 lesson 库（机器可读）",
-    "updatedAt": "2026-09-07T14:00:00.000Z",
+    "updatedAt": "2026-09-09T15:42:48.261Z",
     "carrierOf": "docs/main-agent-lesson-schema-v0.1.md",
     "statusConvention": "proposed（主 agent 产出）→ approved / in-runbook（用户或外部 AI 确认，记 confirmedBy/confirmedAt）；in-runbook=要点已并入 main-agent-runbook 正文；superseded=内容已并入他条（扩展值，机器消费时应跳过）",
     "confirmedAt": "2026-09-04T13:14:35.897Z",
@@ -631,6 +631,48 @@
         "L-2026-0906-033"
       ],
       "recordedAt": "2026-09-07T14:00:00.000Z"
+    },
+    {
+      "id": "L-2026-0909-038",
+      "title": "cc 任务 outputDir 契约根因：buildReviewTask 曾硬编码绝对路径（/mnt/d/cc-tasks/tasks/<id>/out）致每个 claude-code 审核任务被 v2 门控 REJECT（.invalid/ 13 例实证）——schema 要求任务根内相对子路径",
+      "category": "engineering-action",
+      "layer": "L2",
+      "trigger": "派发 cc 任务（buildReviewTask/cc-channel）、cc-watchdog 日志出现 REJECT invalid task、.invalid/ 堆积、claude-code 审核通道实际从未成功",
+      "decision": "outputDir 字段必须相对（\"out\"）；绝对落盘路径（/mnt/d/...）只放 prompt 提示 Claude，不进 task.json 字段。REJECT 后人工复检闭环：CLI invalid list/revalidate/approve/recover/clean（未 approved 拒删）。",
+      "rationale": "v2 schema validateTask 对 outputDir 做越界硬校验（禁绝对路径/..），绝对路径产物必然 REJECT——顶层校验器与底层派发必须同构，字段语义按 schema 而不是按\"给 Claude 看\"设计",
+      "evidence": "expr-2026-09-09_12-30-09 s2v5_3（commit e7a992b）；D:/cc-tasks/queue/.invalid/ 13 例；docs/task-schema-v2.md §10",
+      "confidence": "high",
+      "status": "proposed",
+      "suggested": "proposed",
+      "recordedAt": "2026-09-09T15:42:48.261Z"
+    },
+    {
+      "id": "L-2026-0909-039",
+      "title": "宿主重启后延迟投递噪声：/ask agentWoken 落盘的 aux expr（评审快照，isTest=false/status=open）会被 bootResumeScan/心跳当活跃任务反复唤醒；heartbeat 陈旧信号按阶段分批延迟送达（V3 批→V4 批→V5 批递减序列）",
+      "category": "engineering-action",
+      "layer": "L1",
+      "trigger": "宿主重启后连续收到手动 handoff（expr-*.md 指向 aux 快照）与心跳自查消息，报主 expr 有已 approved 步骤待审",
+      "decision": "① aux 评审快照（/ask 落盘、步骤已 restructure 并入主 expr）执行逻辑归档：置 isTest=true + status=done + finalized=true + archivedNote（v4.7.0 isScanEligible 语义，等效逻辑归档——插件 fs 无删除 API）；② 收尾期收到此类延迟消息：实盘核对 steps.json（allApproved/finalized）+ /health-check heartbeat.found 判定为陈旧投递，trace 留痕即可，不重复动作；③ 别为每条噪声重启宿主清队列（会引入新一轮延迟投递）。",
+      "rationale": "wake queue 是投递即删还是保留待投递取决于宿主实现；实测证明重启会重放历史 wake。归档标记（isTest+done）是停止扫描唤醒的机制级解，比逐条人工确认可扩展",
+      "evidence": "expr-2026-09-09_12-49-39/13-03-17/13-57-25/14-37-38/14-46-35/14-53-11 归档 + 15:0x-16:0x 连续 10+ 条延迟 handoff/心跳；planResumes 复扫 0 计划",
+      "confidence": "high",
+      "status": "proposed",
+      "suggested": "proposed",
+      "recordedAt": "2026-09-09T15:42:48.261Z"
+    },
+    {
+      "id": "L-2026-0909-040",
+      "title": "三副本同步纪律：开发源 lib 改动 ≠ 宿主生效——运行副本（profiles\\web\\node_modules\\dsh-web-relay）与工作副本（web-relay\\dsh-web-relay 镜像）需显式同步；宿主跑的是运行副本旧代码直到 restart-now",
+      "category": "engineering-action",
+      "layer": "L2",
+      "trigger": "改 lib/index.js 等运行时代码后调新端点/新行为发现不存在（如 POST /steps/v2-check 404）、v2 校验器在宿主侧不生效",
+      "decision": "① 改运行时代码后：同步 dev→run copy（lib/bin/cordis.patch.yml/package.json，certutil hash 验证 IDENTICAL）→ watchdog restart-now 重启宿主（bootResumeScan 自动续跑唤醒）；② 收口时同步 dev→work copy（lib/scripts/test/docs/skills/bin 全量镜像 + 删 stale）；③ scripts/docs/test 不进运行副本（files 白名单），cc-watchdog 直接引用开发源 scripts 路径——运行副本只需 lib/bin/cordis/package.json。",
+      "rationale": "三副本架构（源→运行→工作镜像）职责不同：运行副本是宿主加载实例需重启生效，工作副本是发布镜像需全量同步；V1-V5 曾全部只在开发源、宿主跑旧代码未被发现（审核走 dialog 降级链未触新端点）",
+      "evidence": "expr-2026-09-09_12-30-09 s2v5_5（run copy 缺 task-schema-v2.mjs/index.js 旧版 hash DIFF → 同步后 IDENTICAL + restart 实弹 v2-check）",
+      "confidence": "high",
+      "status": "proposed",
+      "suggested": "proposed",
+      "recordedAt": "2026-09-09T15:42:48.261Z"
     }
   ]
 }
