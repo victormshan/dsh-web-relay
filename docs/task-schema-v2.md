@@ -65,9 +65,11 @@ node scripts/task-schema-cli.mjs recover <tasksParentDir>      # s2v5_1: watchdo
 
 ## 6. 测试
 
-- `test/task-schema-v2.test.mjs`：35 用例（fake fs/exec，跨平台 path.join）——validateTask、validateResultText、validateResult（done.flag/errorCode/expectArtifacts/custom outputDir）、runAcceptanceScript、errorCode 分类 6 例
-- 全量基线：280（独立仓 victormshan/dsh-web-relay）
+- `test/task-schema-v2.test.mjs`：53 用例（fake fs/exec，跨平台 path.join）——validateTask、validateResultText、validateResult（done.flag/errorCode/expectArtifacts/custom outputDir）、runAcceptanceScript、errorCode 分类、恢复分类 classifyTaskRecovery、summarizeValidation
+- `test/cc-recovery.test.mjs`：6 例 e2e（真实临时目录）——CLI recover（悬挂补 result/列 re-run）+ CLI report 分组汇总 + invalid 复检闭环
+- 全量基线：299（独立仓 victormshan/dsh-web-relay）
 - s2v3 增补：review 任务默认产物（kind=review 无 expectArtifacts → out/review.md）+ PENDING 语义（无 result.json=执行中，done.flag 双缺不误报；misplaced 恒报）+ runner.sh 完成侧 validate-result 门控（v2-validate-failed）
+- s2v5 增补：watchdog 恢复分类（s2v5_1）/ report mixed 分组汇总（s2v5_2）/ outputDir 根因修复 + invalid 复检（s2v5_3）/ summarizeValidation + v2-check 端点（s2v5_4）
 
 ## 7. 升级兼容矩阵
 
@@ -100,6 +102,7 @@ node scripts/task-schema-cli.mjs recover <tasksParentDir>      # s2v5_1: watchdo
 ## 10. cc-watchdog REJECT 隔离复检闭环（s2v5_3）
 
 - **根因修复（outputDir 相对化）**：`lib/cc-channel.js buildReviewTask` 的 `outputDir` 曾硬编码绝对路径 `/mnt/d/cc-tasks/tasks/<id>/out`——违反 v2 schema（outputDir 必须是任务根内相对子路径），导致**每个 cc 审核任务都被 validate-task 门控 REJECT**（.invalid/ 13 例实证）。现改为相对 `out`；绝对落盘路径（/mnt/d/...）仅在 prompt 里提示 Claude，不进 task.json 字段。任务契约从此可正常过 v2 门控。
+- **v2 校验可视化入口（s2v5_4）**：`POST /dsh-web-relay/steps/v2-check`（body `{workspacePath?, exprId?, stepId?, taskDir}`）——对任意任务目录跑 `validateResult`（复用同一校验器不复制逻辑），返回 `{taskDir, v2{ok,errors,details,exception}, summary}`；带 exprId/stepId 时把 `summarizeValidation` 摘要写入该步 notes + trace（面板可见）。校验器异常软降级（exception 字段，不抛 500）。
 - **CLI invalid 复检闭环**（人工处理 REJECT 隔离任务 queue/.invalid/）：
   ```sh
   node scripts/task-schema-cli.mjs invalid list <ccTasksRoot>        # 列出隔离任务 + reject 原因（validate-task 重放）
