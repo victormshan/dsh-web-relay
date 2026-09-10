@@ -2,7 +2,7 @@
   "meta": {
     "schemaVersion": "0.1",
     "title": "dsh-web-relay 主 agent 语境能力 lesson 库（机器可读）",
-    "updatedAt": "2026-09-10T19:04:39.135Z",
+    "updatedAt": "2026-09-10T19:18:08.012Z",
     "carrierOf": "docs/main-agent-lesson-schema-v0.1.md",
     "statusConvention": "proposed（主 agent 产出）→ approved / in-runbook（用户或外部 AI 确认，记 confirmedBy/confirmedAt）；in-runbook=要点已并入 main-agent-runbook 正文；superseded=内容已并入他条（扩展值，机器消费时应跳过）",
     "confirmedAt": "2026-09-04T13:14:35.897Z",
@@ -743,6 +743,48 @@
       "status": "proposed",
       "suggested": "proposed",
       "recordedAt": "2026-09-10T19:04:39.135Z"
+    },
+    {
+      "id": "L-2026-0910-046",
+      "title": "用 shell 字符串拼接构造 JSON 必错：runner.sh 覆写 result.json 时把含双引号的 JSON 输出未转义塞进 reason → 产物非法 JSON → 宿主 JSON.parse 失败继续轮询白等超时（门控\"坏结果不逃逸\"的意图被自身缺陷抵消）",
+      "category": "engineering-action",
+      "layer": "L1",
+      "trigger": "任何在 bash 里生成 JSON 的场景（写 result.json / 配置 / 上报负载）；或门控写了\"失败结果\"但下游没反应",
+      "decision": "**禁止**用 `echo '{\"k\":\"'\"$VAR\"'\"}'` 这类 shell 拼接生成 JSON。一律用可用运行时安全序列化：`node -e 'require(\"fs\").writeFileSync(process.argv[1], JSON.stringify({...}, null, 2))' <path> <args...>`（或 jq -n --arg）。校验环节必须包含\"产物本身能否被 JSON.parse\"这一断言，而不只是\"字段名出现\"。",
+      "rationale": "门控写出的失败结果若本身是坏 JSON，下游（宿主 pollTaskResult）解析失败会 continue 继续等待 → 表现成\"门控失效 + 白等超时\"，比不写结果更糟（掩盖了真因）。该缺陷由测试脚本（cc 任务 stab2-2-bash-gates）在复现 bash 胶水时发现，此前长期潜伏（触发条件=④门控真的拦截到不合格产物）",
+      "evidence": "cc 任务 stab2-2-bash-gates 的 KNOWN-ISSUE；runner.sh 原 L40 vs 修后 L44（node 安全序列化）；对照实验确认旧方式非法 JSON（Expected ',' or '}' after property value）；scripts/verify-cc-gates.sh 重跑 PASS=16 FAIL=0 KNOWN_ISSUE=0；docs/cc-gates-checklist.md 附录",
+      "confidence": "high",
+      "status": "proposed",
+      "suggested": "proposed",
+      "recordedAt": "2026-09-10T19:18:08.012Z"
+    },
+    {
+      "id": "L-2026-0910-047",
+      "title": "归档 expr 要连步骤状态一起处理，否则心跳反复报\"待办\"：归档测试快照只改 expr 级 status/finalized/isTest，步骤残留 rejected/review → 每轮心跳刷出已归档 expr（实测一轮 4 个）",
+      "category": "engineering-action",
+      "layer": "L2",
+      "trigger": "批量归档测试/历史 expr；或心跳自查反复报同一批\"待办\"而实盘核对发现早已收口",
+      "decision": "双保险：① 扫描层过滤——scanExprSignals 对 `isTest+done/finalized`（或任何 finalized）的 expr 直接不产生信号（与 resume-scan 的 isScanEligible 语义对齐）；② 归档动作层——归档时同时把步骤状态处理干净（或明确保留为历史，并依赖①的过滤）。发现心跳噪音时的正确排查顺序：先实盘核对 steps.json 的真实状态，再判断是\"状态残留\"还是\"真待办\"。",
+      "rationale": "心跳的价值在于\"不漏真待办\"，但它若把已归档内容反复报出，主 agent 会消耗回合做重复核对（实测：一轮报 4 个已归档测试 expr + 1 个陈旧快照），长期会训练出\"忽略心跳\"的坏习惯，反而降低真待办的响应率",
+      "evidence": "expr-2026-09-10_18-42-03 心跳消息（报 4 个已归档 expr）；lib/heartbeat-scan.js 增归档过滤；test/heartbeat-scan.test.js +3 用例；实测回归 390/390",
+      "confidence": "high",
+      "status": "proposed",
+      "suggested": "proposed",
+      "recordedAt": "2026-09-10T19:18:08.012Z"
+    },
+    {
+      "id": "L-2026-0910-048",
+      "title": "续跑熔断阈值会误伤\"有意的多次重启\"：restartCount≥2 即 paused，而回归验证/加载新代码常需连续重启（实测本 expr 被熔断，需手动 resume）",
+      "category": "engineering-action",
+      "layer": "L2",
+      "trigger": "同一 expr 在短时间内连续跨重启（如：验证重启机制 + 加载新代码各一次）后，任务突然 paused 且 stopReason 为续跑熔断",
+      "decision": "① 熔断是防死循环的正确设计（保留）；② 有意的连续重启场景，主 agent 应在重启后主动检查 `restartCount`，若接近阈值则在收口前 resume（/steps/update action=resume）或换新 expr 做后续验证；③ 长期改进方向（未实施，记为候选）：区分\"未完成续跑再次中断\"（真异常，应计数）与\"续跑后正常推进再重启\"（可重置计数）——例如 wake 成功后若 expr 有新的步骤推进则重置 restartCount。",
+      "rationale": "熔断的语义是\"同一断点反复中断且无进展\"，但当前实现只按\"跨 bootId 次数\"计数，未区分是否真有进展；在主动做重启类验证时会被误伤，表现为\"任务莫名 paused\"（排查成本高：需读 stopReason 才知道）",
+      "evidence": "expr-2026-09-10_18-42-03：restartCount=2 → paused（两次重启分别为 stab1_1 机制验证与 stab2_3 加载聚合代码），已 resume 恢复；/health-check restartStats 可直接看到该计数",
+      "confidence": "medium",
+      "status": "proposed",
+      "suggested": "proposed",
+      "recordedAt": "2026-09-10T19:18:08.012Z"
     }
   ]
 }
