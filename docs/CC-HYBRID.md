@@ -89,3 +89,51 @@ kind 支持（语义澄清，cc-understand-hybrid 复盘 2026-09-06 修订）：
 - **batchStepIds 受控并发**：预检（串行）→ `mapLimit`（默认并发 2，env DSH_RELAY_BATCH_CONCURRENCY）并发取结论（不落盘）→ 串行 apply / 原子打回统一落盘——无 state 文件写盘竞态；callGemini 429/5xx 退避（1.5s/3s×2）。
 - 环境开关：`DSH_CC_REVIEW_ENABLED=0` 关闭 cc 通道；`DSH_CC_REVIEW_TIMEOUT_MS` 轮询上限（默认 150s）；`DSH_CC_TASKS_ROOT` 覆盖目录。
 - 注册表：registry.yaml 新增 protocol-v2-evolution 条目；cc-hybrid-claude-code 条目 verification 增 lib/cc-channel.js。
+
+## 7. 默认化判定规则（2026-09-10 架构征询落地 P0-1）
+
+> 结论来源：外部 AI（web-gemini）与 Claude Code 双方**独立**征询（cc 任务 `hybrid-default-advisory`），
+> 均判 **conditional**——三方协作机制适合默认，但**混合架构（cc 派发）应条件默认**
+> （cc 有 4-8 分钟固定开销与硬边界：900s 总超时、无 `--resume`、白名单三工具、无 GUI、Pro 配额）。
+> 判定逻辑固化为纯函数 `lib/triage-route.js`（16 单测），可经 `POST /dsh-web-relay/route/decide` 调用。
+
+### 7.1 默认启用混合架构（cc 派发）
+- 代码实现类且涉及文件 ≥3（跨模块改动）
+- 静态代码诊断 / 架构核查（kind=understand）——cc 可读全仓并给出 file:line 依据
+- 代码级评审（kind=review）——实证价值：POC-3 审出主 agent 与既有单测均漏检的 `refs` 共享引用污染
+- AutoIteration 多版本演进（iterations>1）内的实现/理解步
+- 多方案裁决（alternatives>1）——需要独立第三方视角
+
+### 7.2 默认不启用（硬边界，任何情况都不派 cc）
+| 边界 | 原因 |
+|---|---|
+| 需要 GUI/浏览器/真实页面交互 | cc 无 GUI 能力（如 web-gemini 桥接调试）——由主 agent 做端到端探活验证 |
+| 需要跨会话状态收敛 | cc 每次全新进程、无 `--resume`、无模型记忆继承（记忆只在磁盘产物） |
+| 需要主 agent 专属工具 | cc 白名单仅 `Read,Write,Bash`（无 Glob/Grep/Web/subagent 并发） |
+| 预估 >900s | runner.sh `timeout 900` 硬上限——应由主 agent 先拆分为多个 task.json |
+
+### 7.3 默认不启用（豁免：固定开销不划算）
+- 涉及文件 ≤1 的局部小改
+- 纯配置/环境探路（kind=config/probe）——主 agent 本地极速完成
+
+### 7.4 调用示例
+```sh
+curl -X POST http://127.0.0.1:3080/dsh-web-relay/route/decide -H 'content-type: application/json' \
+  -d '{"kind":"understand","changedFiles":5,"iterations":6}'
+# → {"ok":true,"useHybrid":true,"confidence":"high","reasons":[...],"blockers":[],"summary":"route=hybrid(cc) ..."}
+```
+
+## 8. cc 产物与路径硬校验（P0-2 审计结论：已实现，无需重造）
+
+架构征询的 P0-2 项（"cc 产物合入前置检查器 / 路径错误立即拒绝进入 review"）**已由既有四重校验覆盖**：
+
+| 门控位置 | 实现 | 证据 |
+|---|---|---|
+| 宿主派发前置 | `validateTask(task)` 不合格拒绝派发（防畸形入队） | `lib/index.js:2997-2999` |
+| 宿主 poll 后 | `validateResult`（done.flag 根 / result.json / review.md）不合格不进 approved；**异常已收紧为显式失败**（两态不变式，2026-09-10） | `lib/index.js:3013-3022` |
+| cc-watchdog 侧 | dispatch 前 `validate-task` 门控，非法任务隔离 `queue/.invalid/` 不派发 | `cc-watchdog.sh:25-26` |
+| runner 完成侧 | `validate-result` 门控，不合格覆写 `failed`（`errorCode: v2-validate-failed`，坏结果不逃逸） | `runner.sh:38-41` |
+
+**差异说明**：现状为返回 `{ok:false, error}`（而非抛出 ContractError 异常）——语义等价（不进入 review、自动走降级链），且更契合五级降级链的错误传递设计。
+
+**修复后实测（2026-09-10）**：`enableSwarm=false + reviewChannel=claude-code` → `reviewedBy=claude-code`，90s 完成审核（任务 `rev-1a08b460fc2`）；此前因 outputDir 绝对路径契约 bug，13 例 cc 审核任务全被门控 REJECT（成功率 0%），该 bug 已由 s2v5_3 修复。
