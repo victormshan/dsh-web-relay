@@ -28,3 +28,38 @@ node "$VALIDATOR" validate-task /path/to/malformed.task.json; echo "exit=$?"
 node "$VALIDATOR" validate-result /mnt/d/cc-tasks/tasks/<id>; echo "exit=$?"
 cat /mnt/d/cc-tasks/tasks/<id>/validate.out   # runner.sh 覆写 failed 前的校验输出
 ```
+
+---
+
+## 附录：bash 侧门控自动化测试与缺陷修复（stab2_2，2026-09-10）
+
+### 测试脚本
+`scripts/verify-cc-gates.sh`（WSL 执行：`bash scripts/verify-cc-gates.sh`）——在 `/tmp` 沙箱内
+真实调用 VALIDATOR 并逐行复现两处 bash 胶水逻辑；开头有 **drift-guard**：先 `grep -F` 生产脚本
+确认门控行仍与测试假设一致，生产脚本一旦变更会先失败提示"复现可能已过期"。
+
+最近一次运行：**PASS=16 FAIL=0 KNOWN_ISSUE=0**（EXIT_CODE=0）。
+
+覆盖：③ 非法 task（outputDir 绝对路径）被拒 + 隔离进 `queue/.invalid/` + 合法 task 放行派发；
+④ done.flag 误放 out/ 被拒（`doneFlagErrorCode=done-flag-misplaced`）+ expectArtifacts 缺失被拒
++ 合规产物通过 + 覆写字段核验；软模式（VALIDATOR/node 缺失时短路放行不报错）。
+诚实标注：`cc-watchdog.sh` 常驻循环与 `runner.sh` 真实 claude 执行路径未端到端跑（理由见
+cc 任务 `stab2-2-bash-gates` 的 notes.md）。
+
+### 测试发现的真实缺陷（已修复）
+**④ runner.sh 覆写 failed 的 result.json 曾是非法 JSON**（原第 40 行）：
+```bash
+VERR=$(head -c 300 "$TD/validate.out" | tr '\n' ' ')
+echo '{"status":"failed",...,"reason":"'"$VERR"'"}' > "$TD/result.json"   # ← VERR 是 JSON（含双引号），未转义
+```
+**后果**：④门控的意图是"坏结果不逃逸"，但它写出的 failed result **本身坏 JSON** →
+宿主 `pollTaskResult` 的 `JSON.parse` 失败会 `continue` 继续轮询 → **白等到超时**（而非立即感知
+失败），门控效果被自身缺陷抵消。
+
+**修复**（runner.sh 现第 44 行）：改用 node 安全序列化（同分支上方已保证 node 可用）：
+```bash
+node -e 'const fs=require("fs");fs.writeFileSync(process.argv[1],JSON.stringify({status:"failed",start:process.argv[2],end:process.argv[3],exit:0,errorCode:"v2-validate-failed",reason:process.argv[4]},null,2))' "$TD/result.json" "$START" "$END" "$VERR"
+```
+
+**验证**：`bash scripts/verify-cc-gates.sh` → ④ 覆写产物 JSON 合法性 PASS；另用对照实验确认
+旧拼接方式产出的 JSON 确实非法（`Expected ',' or '}' after property value`）。
