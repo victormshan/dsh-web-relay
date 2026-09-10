@@ -2,7 +2,7 @@
   "meta": {
     "schemaVersion": "0.1",
     "title": "dsh-web-relay 主 agent 语境能力 lesson 库（机器可读）",
-    "updatedAt": "2026-09-09T15:42:48.261Z",
+    "updatedAt": "2026-09-10T12:02:32.380Z",
     "carrierOf": "docs/main-agent-lesson-schema-v0.1.md",
     "statusConvention": "proposed（主 agent 产出）→ approved / in-runbook（用户或外部 AI 确认，记 confirmedBy/confirmedAt）；in-runbook=要点已并入 main-agent-runbook 正文；superseded=内容已并入他条（扩展值，机器消费时应跳过）",
     "confirmedAt": "2026-09-04T13:14:35.897Z",
@@ -673,6 +673,20 @@
       "status": "proposed",
       "suggested": "proposed",
       "recordedAt": "2026-09-09T15:42:48.261Z"
+    },
+    {
+      "id": "L-2026-0910-041",
+      "title": "静默失败三态链：content 层 resolve 空值（return '' 而非 throw）+ 消费者层只认成功分支（只打日志不上报终态）= 服务端任务永久 processing，上游白等满超时（web-gemini 16/16 实测）",
+      "category": "engineering-action",
+      "layer": "L2",
+      "trigger": "跨进程/跨组件的异步任务链路（桥接/队列/扩展↔服务端）出现「任务开始执行但永不结束」；上游只能等满超时；排查时 /stats 缺失败计数只能靠 total-其余 反推",
+      "decision": "① 每层收敛为**两态不变式**：产出层「要么 resolve 非空有效值、要么 throw 带诊断」（禁止 return 空值）；消费层「要么上报成功、要么上报失败」（禁止只打日志的第三态）；② 服务端状态机自带超时兜底终态（不依赖消费者行为）；③ /stats 等可观测端点必须覆盖全部状态枚举（含 failed）；④ 上游判定必须识别 failed/停滞并早退，不白等满超时。",
+      "rationale": "「resolve 空值」在 JS 语义上不是错误（无 exception），但业务上等于失败——消费层的 `if (resp.answer)` 真值判断会把空串与「没响应」一起吞进无操作分支，形成无日志、无终态、无告警的静默泄漏；单测/类型系统都难以捕获，只有端到端探活 + 反向推算统计才能发现",
+      "evidence": "expr 相关：cc 任务 wg-gap-analysis（Claude 分析 248 行 + 主 agent 交叉验证一致）；dsh-web-gemini-ext background.js/content.js/bridge-server.mjs 三处修复；lib/bridge-poll.js + 11 测试；docs/web-gemini-diagnostics-2026-09-10.md；实测 /stats total=16 全非成功态、探活任务 190s+ processing",
+      "confidence": "high",
+      "status": "proposed",
+      "suggested": "proposed",
+      "recordedAt": "2026-09-10T12:02:32.380Z"
     }
   ]
 }
