@@ -42,19 +42,28 @@ description: dsh-web-relay 主 agent 核心能力与调优规范——handoff/�
 - 全量测试通过后再发布
 - 重启宿主 = 主 agent 自主操作（kill-host / restart-now，见 §5），非仅用户动作
 
-## 5. 宿主重启与续跑自检（v4.9.1 固化）
+## 5. 宿主重启与续跑自检（v4.9.3 根因修复后固化）
 
-主 agent **具备自主重启宿主能力**，三选一：
+主 agent **具备自主重启宿主能力**。**首选方式（2026-09-10 根因修复）**：
 
-1. 常驻 watchdog 在跑（计划任务 DSH-WEB-Watchdog 或手动实例，单例锁被其持有）→
-   **首选 `node D:\dsh-web-relay\bin\watchdog.mjs restart-sync [waitSecs]`**（v4.9.2 原子重启）：
-   一次【同步】调用 = kill-host + 内部 wait-healthy 轮询 → 返回 `RESTART_OK bootId=…` 或 `RESTART_TIMEOUT`。
-   **严禁**用 run_in_background + 自编 sleep+probe 编排重启（句柄跨回合失效 + UI 悬挂，036 事故根因）；
-   同步调用 timeout 设 ≥ waitSecs+30s。
-   或 `watchdog.mjs kill-host`（仅树杀不等，watchdog 自愈后自行核对 /health-check）。
-   DRYRUN 演练：`$env:DSH_WEB_DRYRUN='1'` 后同命令（只打日志不执行）。
-2. 无常驻 watchdog（首次部署/守护丢失）→
-   `node D:\dsh-web-relay\bin\watchdog.mjs restart-now`
+1. **`node D:\dsh-web-relay\bin\watchdog.mjs request-restart [delaySecs]`** ← **默认首选**
+   - **根因背景**：主 agent 的每个工具调用进程（powershell.exe）是 **dsh web 宿主进程的直接子进程**；
+     旧命令（`restart-now` / `kill-host` / `restart-sync`）内部用 `taskkill /T /F <宿主PID>` 杀整棵树
+     → **正在执行该命令的工具进程一并被杀** → 工具结果永不返回 → **回合永久卡死，必须用户介入**
+     （用户反复报障的「每次都停」就是这个）。
+   - **机制**：`request-restart` 只写信号文件 `bin/restart.request.json` 后**立即返回**（工具调用正常落地）；
+     常驻 watchdog（Task Scheduler 独立进程树，**不会被自己发起的树杀影响**）在后续 tick（5s 间隔）检测到
+     到期信号 → 执行 prepare → 树杀宿主 → 拉起新宿主。
+   - **实测闭环（2026-09-10）**：命令返回 `RESTART_REQUESTED` exit=0 → 4s 后宿主换代（5764→16860）→
+     `bootResumeScan` 检测活跃 expr + bootId 变化 → **wakeMainAgent 自动唤醒续跑**（全程零用户介入）。
+   - **调用纪律**：命令返回后**本回合即可正常收尾**（不要再用旧编排）；若 expr 有活跃步骤且已落盘 sessionId，
+     重启后会收到「宿主自愈重启 · 自动续跑」handoff 继续；无 sessionId 时需明示用户重启后发任意消息触发续接。
+   - DRYRUN 演练：`$env:DSH_WEB_DRYRUN='1'` 后同命令（只打日志不执行）。
+2. **兜底（仅在无常驻 watchdog 时）**：`watchdog.mjs restart-now`（自持单例锁成为新 watchdog；
+   ⚠ 会中断当前工具调用——用它之前先把回合该做的事做完）。
+   `restart-sync [waitSecs]` 为"同步等待就绪"变体，同样会中断调用，仅在需要一次性拿到
+   `RESTART_OK bootId=…` 且能接受回合中断时使用。
+   `kill-host` 仅树杀不等，交由常驻 watchdog 自愈（同样会中断调用）。
    （自持单例锁：prepare → 树杀 → 进入监控首检拉起，成为新 watchdog）。
 3. 用户手动重启（面板/任务管理器）——仅作为兜底。
 

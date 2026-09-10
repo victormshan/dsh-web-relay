@@ -2,7 +2,7 @@
   "meta": {
     "schemaVersion": "0.1",
     "title": "dsh-web-relay 主 agent 语境能力 lesson 库（机器可读）",
-    "updatedAt": "2026-09-10T12:34:22.524Z",
+    "updatedAt": "2026-09-10T19:04:39.135Z",
     "carrierOf": "docs/main-agent-lesson-schema-v0.1.md",
     "statusConvention": "proposed（主 agent 产出）→ approved / in-runbook（用户或外部 AI 确认，记 confirmedBy/confirmedAt）；in-runbook=要点已并入 main-agent-runbook 正文；superseded=内容已并入他条（扩展值，机器消费时应跳过）",
     "confirmedAt": "2026-09-04T13:14:35.897Z",
@@ -701,6 +701,48 @@
       "status": "proposed",
       "suggested": "proposed",
       "recordedAt": "2026-09-10T12:34:22.524Z"
+    },
+    {
+      "id": "L-2026-0910-043",
+      "title": "宿主重启导致主 agent 回合卡死的根因：工具进程是宿主的直接子进程 + watchdog 用 taskkill /T 杀整棵树 → 执行重启的命令自身被杀、结果永不返回。修复=信号解耦（写文件后立即返回，由独立进程树的 watchdog 执行）",
+      "category": "engineering-action",
+      "layer": "L1",
+      "trigger": "需要重启宿主；或出现「工具调用被中断/回合卡住、必须用户发消息才能继续」的现象",
+      "decision": "重启宿主**一律用 `node bin/watchdog.mjs request-restart [delaySecs]`**：该命令只写 bin/restart.request.json 后立即返回（工具调用正常落地），由常驻 watchdog（Task Scheduler 独立进程树）在后续 tick 执行 prepare→taskkill /T→拉起新宿主。**禁用**直接同步调用 restart-now / kill-host / restart-sync 作为首选（它们会在树杀时把正在执行命令的工具进程一并杀死 → 回合卡死）。命令返回后本回合即可正常收尾，重启后由 bootResumeScan（activeSteps + bootId 变化 → wakeMainAgent）自动唤醒续跑（前提：expr 已落盘 sessionId）。",
+      "rationale": "taskkill /T = 杀指定进程及其整棵子树；主 agent 的工具进程由宿主 spawn，故属该子树。这不是\"任务停下来\"，而是\"重启动作与执行者同树被杀\"的设计缺陷——只要把\"发起重启\"与\"执行重启\"解耦到不同进程树即可根治，无需改 harness",
+      "evidence": "进程父链取证（powershell→宿主→watchdog→cmd→wscript→svchost/Task Scheduler）；bin/watchdog.mjs request-restart + checkRestartRequest；端到端实测 2026-09-10 19:02-19:03Z：返回 exit=0 → 4s 后宿主 5764→16860 → resumeQueuedAt=19:03:04Z 自动唤醒 → watchdog 7592 存活；expr-2026-09-10_18-42-03 stab1_1",
+      "confidence": "high",
+      "status": "proposed",
+      "suggested": "proposed",
+      "recordedAt": "2026-09-10T19:04:39.135Z"
+    },
+    {
+      "id": "L-2026-0910-044",
+      "title": "web-gemini 稳定性三层兜底与\"取任务/回传\"可观测：扩展无 Gemini 标签页时不取任务（任务永久 pending）；sendMessage 可能既不 resolve 也不 reject；区分轮询心跳与任务认领才能定位",
+      "category": "engineering-action",
+      "layer": "L2",
+      "trigger": "web-gemini 通道 /ask 或审核长时间无响应；需判断是\"扩展没在轮询\"还是\"取了任务不回传\"",
+      "decision": "① 每一层都要有兜底终态：宿主侧待认领早退（pendingSince 超 60s → unavailable）、服务端 sweep（pending 60s / processing 120s → failed 带诊断）、扩展侧 sendMessage 超时（70s → NO_RESPONSE 上报）。② 可观测要区分两个指标：lastPollAt/pollCount（轮询心跳，反映 SW+标签页是否活着）与 lastClaimAt/claimCount（真正认领任务，反映扩展是否在工作）；只统计后者时\"每秒轮询\"会被误读成\"高频认领\"。③ 记住外部依赖：Chrome 无 gemini.google.com 标签页时，扩展的 pollOnce 直接 return，通道静默不可用——这是首要排查项。",
+      "rationale": "该通道的三次事故各不相同（扩展不响应 / sendMessage 挂起 / 无标签页不取任务），但共同点是\"上游只能靠超时感知\"，且初版可观测指标语义错误掩盖了真因。逐层兜底 + 双指标可观测把它们从\"白等 300s\"变为\"秒级诊断 + 提前降级\"",
+      "evidence": "expr-2026-09-10_18-42-03 stab1_2；实测：桥接强杀 5s 自愈、t0001 132s 被服务端 sweep 判 failed、poll=0 正确指示无 Gemini 标签页、claimCount 299 暴露轮询/认领语义混淆；lib/bridge-poll.js（pending/processing 双阈值）+ bridge-server.mjs（sweep 双状态 + 双指标）+ background.js（sendMessage 70s 超时）",
+      "confidence": "high",
+      "status": "proposed",
+      "suggested": "proposed",
+      "recordedAt": "2026-09-10T19:04:39.135Z"
+    },
+    {
+      "id": "L-2026-0910-045",
+      "title": "cc 任务范围控制：900s 超时白耗配额的教训 + 范围评估器（校准要靠实测反推，且要防\"描述性编号列表\"假阳性）",
+      "category": "engineering-action",
+      "layer": "L2",
+      "trigger": "派发 Claude Code 任务前；或 cc 任务超时失败（exit=124）无产物",
+      "decision": "派发前用 `lib/task-scope.mjs` 的 assessTaskScope 预检：>600s 判 too-big（必须拆分，用 recommendSplit 出拆分块）、>420s 判 risky。经验阈值：单任务 ≤2 产物 + ≤5 个实质问题 + 不要求\"核实源码/多方案评估/出补丁\"这类深度动作。**校准必须用实测反推**（v2 校验器实现 222s / 架构征询 258s / 代码诊断 480s / RCA 超时 900s），且要防两类假阳性——编号列表（验收点清单）被当成深度评估工作量（已加 MAX_EVAL_ITEMS_COUNTED 封顶）、以及\"问题多但回答简短\"被高估。",
+      "rationale": "RCA 任务（5 问 + 4 方案 + 3 产物 + 要求核实源码给补丁）900s 超时且零产物 = 白耗 15 分钟 Pro 配额；而范围适中的任务全部成功。范围是 cc 通道唯一的硬约束（900s 不可协商、无 --resume 不能续），必须在派发前判定而不是失败后补救",
+      "evidence": "cc 任务 restart-interrupt-rca（exit=124 超时无产物）vs stab1-3-scope-assessor（4.8min 成功）/ stab1-4-gate-regression（1.6min 成功）；lib/task-scope.mjs + test/task-scope.test.mjs（16 用例，二次校准 4/4 实测基准通过）；docs/CC-HYBRID.md §7",
+      "confidence": "high",
+      "status": "proposed",
+      "suggested": "proposed",
+      "recordedAt": "2026-09-10T19:04:39.135Z"
     }
   ]
 }

@@ -380,6 +380,15 @@
     - content-contains:
         file: docs/main-agent-lessons.json
         text: "L-2026-0907-037"
+    - content-contains:
+        file: bin/watchdog.mjs
+        text: "request-restart"
+    - content-contains:
+        file: skills/dsh-web-relay-main-agent/SKILL.md
+        text: "request-restart"
+    - content-contains:
+        file: docs/main-agent-lessons.json
+        text: "L-2026-0910-043"
   lastVerified: 2026-09-07
   status: approved
   version: 2
