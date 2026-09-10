@@ -383,3 +383,37 @@
   lastVerified: 2026-09-07
   status: approved
   version: 2
+
+- id: hybrid-default-controls
+  name: 混合架构默认化治理（场景路由分流 + 降级率审计 + 双通道交叉校验）
+  category: workflow
+  scope: hybrid-default-policy
+  source: docs/CC-HYBRID.md
+  skill: null
+  trigger: 判断某类任务该不该派给 Claude Code（混合架构条件默认）、审核是否被静默降级、importance=high 步骤是否需要两条外部通道交叉校验
+  conflicts: []
+  verification:
+    - content-contains:
+        file: docs/CC-HYBRID.md
+        text: "默认化判定规则"
+    - file-exists: lib/triage-route.js
+    - content-contains:
+        file: lib/triage-route.js
+        text: "decideHybridRoute"
+    - file-exists: lib/review-audit.js
+    - content-contains:
+        file: lib/review-audit.js
+        text: "auditReviewSources"
+    - file-exists: lib/cross-check.js
+    - content-contains:
+        file: lib/cross-check.js
+        text: "crossCheckVerdicts"
+    - file-exists: test/triage-route.test.js
+    - file-exists: test/review-audit.test.js
+    - file-exists: test/cross-check.test.js
+    - content-contains:
+        file: docs/main-agent-lessons.json
+        text: "L-2026-0910-042"
+  lastVerified: 2026-09-10
+  status: approved
+  version: 1

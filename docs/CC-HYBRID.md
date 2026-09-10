@@ -137,3 +137,19 @@ curl -X POST http://127.0.0.1:3080/dsh-web-relay/route/decide -H 'content-type: 
 **差异说明**：现状为返回 `{ok:false, error}`（而非抛出 ContractError 异常）——语义等价（不进入 review、自动走降级链），且更契合五级降级链的错误传递设计。
 
 **修复后实测（2026-09-10）**：`enableSwarm=false + reviewChannel=claude-code` → `reviewedBy=claude-code`，90s 完成审核（任务 `rev-1a08b460fc2`）；此前因 outputDir 绝对路径契约 bug，13 例 cc 审核任务全被门控 REJECT（成功率 0%），该 bug 已由 s2v5_3 修复。
+
+## 9. 默认化配套治理能力（2026-09-10 架构征询落地 P1-1/P2-1）
+
+### 9.1 审核降级率审计（P1-1）
+- `lib/review-audit.js`：`auditReviewSources(steps)` 统计审核来源分布，dialog 兜底占比超阈值（默认 0.3）即标记告警；三级判定 **ok / warn / risk**（risk = 超阈值且外部通道成功 0 步）。
+- 接入 finalize 收口汇总（`summarizeReviewSources`）：超阈值自动追加告警段，写入 `finalSummary` 与三方轨迹；汇总分组新增 claude-code 行。
+- 实证依据：AutoIteration 6 版迭代 dialog 13/23 ≈ 57% 超阈值——此前收口只有分组清单无比例告警，"外部通道连续不可用 → 静默降级内部模型"难以察觉。
+- 阈值可覆盖：`auditReviewSources(steps, { dialogRatioWarn })`；最小样本 3 步防噪声。
+
+### 9.2 importance=high 双通道交叉校验（P2-1）
+- `lib/cross-check.js`：`crossCheckVerdicts(primary, secondary)` 仲裁两条**独立**外部通道的结论：
+  - 一致 → `consensus-approved/rejected`（采信，reason 保留双方依据）
+  - **冲突**（一 approved 一 rejected）→ `escalate-conflict`：不自动判定，返回 `manual: true` 由前端展开人工裁决框
+  - 任一方无结论/无法识别 → `escalate-unusable`（不得由单方结论自动采信）
+- 请求级开关：`POST /steps/auto-review` body 增 `enableCrossCheck: true`（配合 `shouldCrossCheck` 门控：仅显式开启且 importance=high 生效）。
+- 通道不可用与结论冲突严格区分：次通道（cc）不可用时**采信主通道并标注"交叉校验未完成"**，避免把"通道故障"误升级为人工。

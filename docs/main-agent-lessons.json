@@ -2,7 +2,7 @@
   "meta": {
     "schemaVersion": "0.1",
     "title": "dsh-web-relay 主 agent 语境能力 lesson 库（机器可读）",
-    "updatedAt": "2026-09-10T12:02:32.380Z",
+    "updatedAt": "2026-09-10T12:34:22.524Z",
     "carrierOf": "docs/main-agent-lesson-schema-v0.1.md",
     "statusConvention": "proposed（主 agent 产出）→ approved / in-runbook（用户或外部 AI 确认，记 confirmedBy/confirmedAt）；in-runbook=要点已并入 main-agent-runbook 正文；superseded=内容已并入他条（扩展值，机器消费时应跳过）",
     "confirmedAt": "2026-09-04T13:14:35.897Z",
@@ -687,6 +687,20 @@
       "status": "proposed",
       "suggested": "proposed",
       "recordedAt": "2026-09-10T12:02:32.380Z"
+    },
+    {
+      "id": "L-2026-0910-042",
+      "title": "混合架构「默认化」的正确形态：三方协作可默认、cc 派发须条件默认——判定规则要固化成可调用纯函数（硬边界优先于收益），并配降级率审计 + 双通道交叉校验两道治理门",
+      "category": "collaboration-rhythm",
+      "layer": "L3",
+      "trigger": "考虑把\"混合架构 + 三方协作\"从按需启用升级为默认运行方式；或判断某类任务该不该派给 Claude Code；或收口时怀疑\"审核是否被静默降级\"",
+      "decision": "① 三方协作机制（Step List 状态机 + 审核降级链 + 轨迹）适合默认；混合架构（cc 派发）条件默认——硬边界（需 GUI/浏览器、需跨会话状态、需主 agent 专属工具、预估>900s）优先阻断，豁免（≤1 文件小改、纯配置探路），启用（≥3 文件实现、静态诊断、代码评审、iterations>1、alternatives>1）；规则固化为 lib/triage-route.js 纯函数 + POST /route/decide 入口，禁止凭感觉派发；② 配降级率审计（lib/review-audit.js：dialog 占比>30% 告警，超阈值且外部通道 0 成功=risk）；③ 配双通道交叉校验（lib/cross-check.js：仅 importance=high 且显式开启，冲突升级人工、通道不可用与结论冲突严格区分）。",
+      "rationale": "两方独立征询（外部 AI web-gemini + Claude Code 本体）均判 conditional——分歧点不在\"该不该用\"，而在\"什么条件下用\"。cc 通道的 4-8 分钟固定开销与四条硬边界（900s/无--resume/白名单三工具/无 GUI）决定了它不该是全局默认；而默认化最大的风险不是能力不足，而是\"外部通道连续不可用时静默降级到无工具内部模型，形成形式上 approved 但实质审查强度下降\"——必须靠审计与交叉校验把它变成可见信号",
+      "evidence": "expr-2026-09-10_12-18-24（P0-1/P0-2/P1-1/P2-1 四步全 approved + finalize）；cc 任务 hybrid-default-advisory（Claude 建议书 24KB/verdict.json）；外部 AI 征询 expr-2026-09-10_12-18-24（web-gemini，27s 无降级）；lib/triage-route.js（16 测试）+ lib/review-audit.js（11 测试）+ lib/cross-check.js（11 测试）；docs/CC-HYBRID.md §7-§9；实证数据：AutoIteration dialog 13/23=57%、cc 审核修复后 90s 成功（rev-1a08b460fc2）",
+      "confidence": "high",
+      "status": "proposed",
+      "suggested": "proposed",
+      "recordedAt": "2026-09-10T12:34:22.524Z"
     }
   ]
 }
