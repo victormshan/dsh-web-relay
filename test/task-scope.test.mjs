@@ -23,6 +23,8 @@ import {
   SECONDS_PER_REFS_CHUNK,
   REFS_CHUNK_SIZE,
   SECONDS_PER_DEEP_ACTION,
+  MAX_EVAL_ITEMS_COUNTED,
+  MAX_DEEP_ACTIONS_COUNTED,
 } from '../lib/task-scope.mjs'
 
 // ---- 实测校准 ----
@@ -66,6 +68,29 @@ test('深度动作词：仅"问题多但回答简单"不应触发深度因子（
   const many = { kind: 'understand', prompt: '1) A 2) B 3) C 4) D 5) E 6) F 7) G', expectArtifacts: [], refs: [] }
   const r = assessTaskScope(many)
   assert.ok(!r.reasons.some((x) => x.includes('深度动作')), '无深度动作词时不应出现该项')
+})
+
+test('二次校准：编号项按上限计（描述性编号列表不等于评估工作量）', () => {
+  // 13 个编号项（如测试用例清单）不应线性放大——上限 MAX_EVAL_ITEMS_COUNTED
+  const few = { kind: 'implement', prompt: '1) a 2) b', expectArtifacts: [], refs: [] }
+  const many = { kind: 'implement', prompt: Array.from({ length: 13 }, (_, i) => `${i + 1}) 要点${i}`).join(' '), expectArtifacts: [], refs: [] }
+  const a = assessTaskScope(few)
+  const b = assessTaskScope(many)
+  assert.ok(b.estimatedSeconds - a.estimatedSeconds <= MAX_EVAL_ITEMS_COUNTED * 20, `编号项放大不应超过上限：${a.estimatedSeconds} → ${b.estimatedSeconds}`)
+  assert.ok(b.reasons.some((x) => x.includes('计前')), '超上限时应标注"计前 N 项"')
+})
+
+test('二次校准：实测基准 stab1-4 型任务（13 编号验收点 + 3 深度词 + 2 产物）不得判 too-big', () => {
+  // 实测：该任务 4-5 分钟成功完成（2026-09-10），初版曾误判 too-big 770s
+  const task = {
+    kind: 'implement',
+    prompt: '产出 1：out/gate-regression.test.mjs（≥8 用例）覆盖 1) 组合断言 2) 绝对路径 3) 越界 4) 非法 taskId ' +
+      '5) 空 title 6) kind 非法 7) 兼容性 8) P2 判定。产出 2：out/gates.md 列四重门控清单。请核实源码并实现测试。',
+    expectArtifacts: ['gate-regression.test.mjs', 'gates.md'],
+    refs: ['/mnt/d/a.js', '/mnt/d/b.mjs', '/mnt/d/c.md'],
+  }
+  const r = assessTaskScope(task)
+  assert.notEqual(r.level, 'too-big', `不得判 too-big，实际 ${r.level}/${r.estimatedSeconds}s`)
 })
 
 test('深度动作词：含"核实/评估/补丁/实现/交叉验证"逐项累加', () => {
@@ -138,8 +163,14 @@ test('recommendSplit：too-big 且产物 ≥2 → 按产物逐份拆分（≤4 �
 })
 
 test('recommendSplit：too-big 但产物 <2 → 退化为诊断/实现两块', () => {
-  const task = { kind: 'understand', prompt: '请核实源码、逐条核对、评估方案、给出补丁、交叉验证并实现修复', expectArtifacts: [], refs: [] }
-  assert.equal(assessTaskScope(task).level, 'too-big')
+  // 构造 too-big 且无产物：靠多个问题 + 深度动作词 + refs 叠加过 600s
+  const task = {
+    kind: 'understand',
+    prompt: '请核实源码、逐条核对、评估方案、给出补丁、交叉验证并实现修复？请说明 1) 根因 2) 影响 3) 方案 4) 验收。',
+    expectArtifacts: [],
+    refs: Array.from({ length: 12 }, (_, i) => `/mnt/d/ref${i}.md`),
+  }
+  assert.equal(assessTaskScope(task).level, 'too-big', `构造需为 too-big，实际 ${JSON.stringify(assessTaskScope(task))}`)
   const s = recommendSplit(task)
   assert.equal(s.needed, true)
   assert.equal(s.chunks.length, 2)
