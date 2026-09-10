@@ -34,6 +34,12 @@ export const CFG = {
   webCmd: (process.env.DSH_WEB_CMD || '').trim(),
   logFile: process.env.DSH_WEB_LOG || path.join(__dirname, 'watchdog-host.log'),
   lockFile: process.env.DSH_WEB_LOCK || path.join(__dirname, '.watchdog.lock'),
+  // v4.9.3（根因修复）: 重启请求信号文件——主 agent 的工具进程是宿主进程的**直接子进程**，
+  // 直接调用 restart-now / kill-host 会因 taskkill /T /F 把正在执行该命令的工具进程一并杀掉，
+  // 导致工具调用结果永不到达、回合卡死（须用户介入才能继续——"每次都停"的根因）。
+  // 改为「写信号文件 → 常驻 watchdog（独立进程树，Task Scheduler 下）在后续 tick 执行重启」：
+  // 调用方命令毫秒级返回，等主 agent 工具进程退出后 watchdog 才树杀宿主，回合不再中断。
+  restartRequestFile: process.env.DSH_WEB_RESTART_REQ || path.join(__dirname, 'restart.request.json'),
   dryRun: process.env.DSH_WEB_DRYRUN === '1',   // 模拟模式：只打日志不 kill/spawn（验收模拟用，防误杀真实宿主）
   // v3.9.3（总守护）：桥接链路托管——探测 8899，发现 DSH-Bridge-Watchdog 未运行则拉起
   bridgePort: Number(process.env.DSH_WEB_BRIDGE_PORT) || 8899,
@@ -244,6 +250,29 @@ async function tick() {
   if (CFG.bridgeCheckEvery > 0 && tickCount % CFG.bridgeCheckEvery === 0) {
     await auxBridgeTick().catch((e) => log(`[bridge] aux 检查异常：${String((e && e.message) || e).slice(0, 200)}`))
   }
+  // v4.9.3（根因修复）: 处理主 agent 重启请求信号——由常驻 watchdog（独立进程树）执行，
+  // 避免调用方的工具进程随宿主树被杀（详见 CFG.restartRequestFile 注释）。
+  checkRestartRequest()
+}
+
+/**
+ * 检查并执行主 agent 的重启请求（信号文件）。
+ * 到期后删除信号文件并执行 doRestart()；执行前再确认一次（防重复触发）。
+ */
+function checkRestartRequest() {
+  let raw = null
+  try { raw = fs.readFileSync(CFG.restartRequestFile, 'utf8') } catch { return } // 无请求
+  let req = null
+  try { req = JSON.parse(raw) } catch { /* 内容损坏：清理 */ }
+  if (!req || typeof req.at !== 'number') {
+    try { fs.unlinkSync(CFG.restartRequestFile) } catch {}
+    log('[restart-request] 信号文件内容无效，已清理')
+    return
+  }
+  if (Date.now() < req.at) return // 未到期
+  try { fs.unlinkSync(CFG.restartRequestFile) } catch {}
+  log(`[restart-request] 收到主 agent 重启请求（requestedAt=${new Date(req.requestedAt || 0).toISOString()} reason=${req.reason || '-'}）→ 执行重启`)
+  doRestart()
 }
 
 let childBridge = null
@@ -280,6 +309,25 @@ async function auxBridgeTick() {
 // 仅作为 CLI 主入口运行时启动（被测试 import 时不执行）
 const isMain = process.argv[1] && import.meta.url === new URL(`file://${process.argv[1].replace(/\\/g, '/')}`).href
 if (isMain) {
+  // v4.9.3（根因修复）: request-restart [delaySecs]——写重启信号文件后**立即返回**。
+  // 常驻 watchdog 的 tick 检测到信号（到期）后由其执行 prepare→树杀→拉起。
+  // 关键：调用方工具进程在树杀前已正常退出，因此不会出现"工具调用被中断、回合卡死"。
+  const requestRestart = process.argv[2] === 'request-restart'
+  if (requestRestart) {
+    const delaySecs = Math.max(0, Number(process.argv[3] || 2))
+    const reason = String(process.argv[4] || 'main-agent 请求重启（宿主管家）')
+    const payload = { at: Date.now() + delaySecs * 1000, requestedAt: Date.now(), delaySecs, reason, by: `pid:${process.pid}` }
+    try {
+      fs.writeFileSync(CFG.restartRequestFile, JSON.stringify(payload, null, 2))
+      log(`[request-restart] 已写重启信号（${delaySecs}s 后执行）：${CFG.restartRequestFile} | reason=${reason}`)
+      console.log(`RESTART_REQUESTED file=${CFG.restartRequestFile} at=${new Date(payload.at).toISOString()}`)
+      process.exit(0)
+    } catch (e) {
+      log(`[request-restart] 写信号失败：${String((e && e.message) || e)}`)
+      console.log('RESTART_REQUEST_FAILED')
+      process.exit(1)
+    }
+  }
   // v4.9.1: kill-host 子命令——仅树杀 3080 宿主（不 acquireLock；常驻 watchdog 探测 miss 后自愈拉起新宿主）。
   // 主 agent/面板「重启宿主」的工具化入口（替代每次手写 taskkill 编排脚本）；DRYRUN 演练同 restart-now。
   const killHost = process.argv[2] === 'kill-host'
