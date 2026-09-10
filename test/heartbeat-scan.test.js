@@ -17,6 +17,27 @@ test('scanExprSignals：无待办 → 空信号', () => {
   assert.deepEqual(scanExprSignals(st, { now }).signals, [])
 })
 
+// ---- stab2_3: 已归档 expr 不产生心跳信号（防反复打扰）----
+test('scanExprSignals：已归档测试 expr（isTest+done）即使残留 rejected/review 步骤也不报信号', () => {
+  // 实测场景：归档测试快照时只改了 expr 级 status/finalized/isTest，步骤仍残留 rejected/review
+  // → 每轮心跳都报 rejected-pending/review-pending，反复打扰主 agent（实测一轮报 4 个）
+  const st = base({ isTest: true, status: 'done', finalized: true, steps: [{ id: 'ccv1', status: 'rejected' }, { id: 'xc1', status: 'review' }] })
+  assert.deepEqual(scanExprSignals(st, { now }).signals, [])
+})
+
+test('scanExprSignals：finalized 的 expr 不报信号（即使步骤非 approved）', () => {
+  const st = base({ finalized: true, status: 'done', steps: [{ id: 'a', status: 'rejected' }] })
+  assert.deepEqual(scanExprSignals(st, { now }).signals, [])
+})
+
+test('scanExprSignals：未归档 expr 仍正常报信号（过滤不过度）', () => {
+  const st = base({ isTest: false, status: 'open', finalized: false, steps: [{ id: 'a', status: 'rejected' }] })
+  assert.ok(scanExprSignals(st, { now }).signals.includes('rejected-pending'))
+  // isTest=true 但仍在执行（未收口）→ 照样报信号
+  const running = base({ isTest: true, status: 'executing', finalized: false, activeSteps: ['a'], steps: [{ id: 'a', status: 'executing' }] })
+  assert.ok(scanExprSignals(running, { now, staleMs: 1 }).signals.length > 0)
+})
+
 test('review-pending：有 review 状态步骤', () => {
   const st = base({ steps: [{ id: 'r1', title: '待审', status: 'review' }] })
   const r = scanExprSignals(st, { now })
