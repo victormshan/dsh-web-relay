@@ -1,6 +1,7 @@
 # dsh-web-gemini-ext 扩展侧改动留痕（2026-09-10 稳定性迭代）
 
-> 该扩展项目（`D:\DSH\dsh-web-gemini-ext`）**不在本仓库版本控制内**（非 git 目录）。
+> 该扩展项目（`D:\DSH\dsh-web-gemini-ext`；**但 Chrome 实际加载的是
+> `D:\dsh relay test\dsh-web-gemini-ext`**——见下方 §7 路径纠偏）**不在本仓库版本控制内**（非 git 目录）。
 > 为可追溯，此文档记录本轮由主 agent 实施的改动、备份位置与生效条件。
 > 原文件备份：`*.bak-wg-20260910-200057`（同目录）。
 
@@ -96,3 +97,32 @@ Chrome 中**必须存在 `https://gemini.google.com/*` 标签页**，否则扩�
 - step 1（P0 Offscreen + Tab 补建）→ **external**（4.9s）
 - step 2（P1 选择器降级 + reload 自愈）→ **claude-code**（164s）← cc 审核通道修复后**首次在真实任务中成功审核**（此前仅测试步 ccv2 90s；历史 13 例全 REJECT）
 - step 3（P1 健康上报 + 快速降级）→ **external**（5.1s）
+
+## 7. ⚠️ 路径纠偏：实施目录 ≠ Chrome 运行时加载目录（收口核验发现）
+
+**现象**：§1–§4 的加固产物落在 `D:\DSH\dsh-web-gemini-ext`（v0.4.0），而 Chrome 实际加载的
+未打包扩展目录是 **`D:\dsh relay test\dsh-web-gemini-ext`**（收口时仍为 9/2 的 v0.3.0）。
+若直接重载扩展，加载到的仍是旧版——**Offscreen 保活 / Tab 自动补建 / 选择器降级链 / page-health
+上报全部不会生效**，形成"改完看起来生效、实际未生效"的静默落差。
+
+**判定依据（不要靠猜，取运行时注册表）**：
+1. `%LOCALAPPDATA%\Google\Chrome\User Data\Default\Secure Preferences` →
+   `extensions.settings[<id>].path` = `D:\dsh relay test\dsh-web-gemini-ext`，`location=4`（LOAD_UNPACKED）
+2. `...\Default\Preferences` 的 `extensions.settings[<id>].file_data["manifest.json"]` 记录了
+   该扩展**已加载**的 manifest 原文——收口核验时为 `"version": "0.3.0"`（即旧版仍在跑）
+3. 对照 `chrome://extensions` 卡片上的"已加载路径/版本"（人工复核最快）
+
+**为什么 Step 3 当时实测有效而 Step 1/2 未生效**：运行中的 bridge（PID 19840）由
+`D:\DSH\dsh-web-gemini-ext\bridge-watchdog.mjs`（PID 12944）以脚本目录为 cwd 拉起，故 bridge 侧是
+v0.4.0 加固版；扩展侧却加载自 workspace 目录的 v0.3.0 → **两侧版本错配**。
+
+**修复（2026-09-11 05:11）**：以 v0.4.0 为源同步 三副本（dev → Chrome 加载目录 → 工作副本
+`C:\Users\Administrator\web-relay\dsh-web-gemini-ext`），覆盖前逐文件备份为
+`*.bak-presync-20260911-051101`；同步后三副本 SHA256 全同，`node --check` 全过，
+加载目录 manifest = `version 0.4.0` + `permissions ["alarms","tabs","offscreen"]`。
+
+**纪律（lesson 049）**：涉及"部署形态"的交付（Chrome 扩展 / 计划任务 / 服务），
+落地前先确认**运行时实际加载的那份**（注册表 / 进程命令行 / cwd），再实施；
+多副本（开发 / 运行 / 工作副本）必须哈希一致后才算完成，收尾以"重载后生效"为验收前提。
+另注意 `/stats.worker.authState` 是**粘性字段**（仅在被上报时更新），
+在扩展尚未支持 page-health 上报（旧版）时，它可能是历史手工测试值，不能当作"扩展已上报"的证据。

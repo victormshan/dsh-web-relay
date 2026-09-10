@@ -2,7 +2,7 @@
   "meta": {
     "schemaVersion": "0.1",
     "title": "dsh-web-relay 主 agent 语境能力 lesson 库（机器可读）",
-    "updatedAt": "2026-09-10T19:18:08.012Z",
+    "updatedAt": "2026-09-10T21:12:09.423Z",
     "carrierOf": "docs/main-agent-lesson-schema-v0.1.md",
     "statusConvention": "proposed（主 agent 产出）→ approved / in-runbook（用户或外部 AI 确认，记 confirmedBy/confirmedAt）；in-runbook=要点已并入 main-agent-runbook 正文；superseded=内容已并入他条（扩展值，机器消费时应跳过）",
     "confirmedAt": "2026-09-04T13:14:35.897Z",
@@ -785,6 +785,20 @@
       "status": "proposed",
       "suggested": "proposed",
       "recordedAt": "2026-09-10T19:18:08.012Z"
+    },
+    {
+      "id": "L-2026-0911-049",
+      "title": "部署形态交付（Chrome 扩展/计划任务/服务）：实施目录 ≠ 运行时加载目录，须以运行时注册表确认加载路径，多副本哈希一致才算完成",
+      "category": "engineering-action",
+      "layer": "L2",
+      "trigger": "交付物要被某个运行时\"加载/执行\"时（Chrome 未打包扩展、Windows 计划任务、常驻服务/守护进程），尤其是方案里给了 targetWorkspace / 安装目录，而机器上存在多个同名副本（开发目录 / 工作副本 / 历史目录）",
+      "decision": "① 实施前先确认\"运行时实际加载哪一份\"：Chrome 未打包扩展查 `%LOCALAPPDATA%\\Google\\Chrome\\User Data\\<profile>\\Secure Preferences` 的 `extensions.settings[<id>].path`（location=4 即 LOAD_UNPACKED）与 `Preferences` 里 `file_data[\"manifest.json\"]` 记录的已加载 manifest 原文；计划任务查 `schtasks /query /v`；常驻进程查命令行 + cwd（`Get-CimInstance Win32_Process`）。② 产物落到运行时加载目录，并让 开发/运行/工作副本 三份 SHA256 全同；覆盖前逐文件 `.bak-presync-<stamp>`。③ 收口核验必须包含\"重载后生效\"这一步：不能因为语法检查/单测通过就宣布完成。④ 通道/服务类组件注意\"两侧版本错配\"——bridge 生效不代表扩展生效（各自独立的加载来源）。",
+      "rationale": "未打包扩展的加载路径是 Chrome 侧持久化注册表值，与方案里写的 targetWorkspace、与\"最近被编辑的目录\"都可能不同；一旦错配，代码正确但运行时行为零变化，表现为\"改完没效果、重载也没效果\"的静默落差，排查成本极高（现象像功能没实现，其实是没加载）",
+      "evidence": "expr-2026-09-10_20-29-05 收口核验：Step1/Step2 加固落 `D:\\DSH\\dsh-web-gemini-ext`（v0.4.0），而 Chrome 加载 `D:\\dsh relay test\\dsh-web-gemini-ext`（Preferences.file_data 记录 version 0.3.0）；Bridge 侧因由 `D:\\DSH` 下 watchdog 拉起而生效，形成两侧版本错配；已同步三副本（备份 `*.bak-presync-20260911-051101`，SHA256 全同）并在三方轨迹追加核验条目",
+      "confidence": "high",
+      "status": "proposed",
+      "suggested": "proposed",
+      "recordedAt": "2026-09-10T21:12:09.422Z"
     }
   ]
 }

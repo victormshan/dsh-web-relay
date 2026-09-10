@@ -95,6 +95,7 @@
 | cc 任务 outputDir 绝对路径 | buildReviewTask 曾硬编码 `/mnt/d/cc-tasks/tasks/<id>/out` → 每个任务被 v2 门控 REJECT（.invalid/ 堆积） | outputDir 字段必须相对（"out"）；绝对路径只放 prompt（lesson 038） |
 | 宿主重启后延迟投递噪声 | aux 评审快照（/ask 落盘）被 bootResumeScan/心跳反复唤醒；陈旧信号分批延迟送达 | aux 快照逻辑归档（isTest=true+done）；收尾期实盘核对 steps.json + heartbeat.found 后 trace 留痕即可（lesson 039） |
 | 三副本同步遗漏 | 开发源 lib 改动 ≠ 宿主生效（运行副本跑旧代码）；work copy 镜像滞后 | 运行副本同步 + restart-now；收口时 work copy 全量镜像；scripts/docs/test 不进运行副本（lesson 040） |
+| 部署形态交付的加载路径 | 方案给的 `targetWorkspace` ≠ 运行时实际加载的那一份（如 Chrome 未打包扩展加载 `D:\dsh relay test\dsh-web-gemini-ext`，而加固落在 `D:\DSH\dsh-web-gemini-ext`）→ 代码正确但重载后零变化（静默落差）；服务/扩展两侧版本还可能错配 | 实施前先取运行时注册表确认加载目录：Chrome `Secure Preferences` 的 `extensions.settings[<id>].path`（location=4）+ `Preferences` 的 `file_data["manifest.json"]`（已加载 manifest 原文）；计划任务 `schtasks /query /v`；常驻进程查命令行+cwd。产物落加载目录、三副本 SHA256 一致、覆盖前 `*.bak-presync-<stamp>`；收口以"重载后生效"为验收前提（lesson 049） |
 
 ## 7. 配套
 
