@@ -163,3 +163,17 @@ content script 的 `setInputValue()` 直接写入 composer，**若用户当时�
 ### 8.4 生效条件与验收
 需再次重载扩展（manifest 版本变更 0.4.1）；`chrome://extensions` 卡片版本应显示 **0.4.1**。
 备份：`*.bak-v041-20260911-013158`。三副本同步后 SHA256 一致（content.js `fde6694ad5fb`）。
+
+### 8.5 实盘通过（2026-09-11，v0.4.1 重载后）——通道首次端到端成功
+重载 v0.4.1 后按声明复测（bridge `POST /create-task` → `GET /task-result/<id>`）：
+
+| 次序 | 任务 | 结果 | 说明 |
+|---|---|---|---|
+| 1 | t0001 | ❌ `NO_RESPONSE`（6s 快速失败） | **扩展刚重载**：已打开标签页里的旧 content script 成孤儿，新后台 `sendMessage` 收不到响应 |
+| 2 | t0002 | ✅ **`done` / answer=`"收到"`**（约 50–60s） | 自愈生效（NO_RESPONSE 触发节流 reload 标签页 + content script 重新注入）后，发送成功并取回真实 Gemini 回复 |
+
+- 发送链路：v0.4.1 的三路兜底（按钮候选链 → Enter 派发到 `activeElement` → `form.requestSubmit()`）解决了 v0.4.0 的 `SEND_FAIL`（原先发送按钮识别失败、Enter 无效）。
+- 健康上报全程正常：`/stats.worker` = `authState=OK, isReady=true`（处理任务期间 `lastSeenAt` 冻结属正常——轮询与任务是串行的，任务结束后恢复）。
+- 结论：**"通道真实可用"这一档验收通过**（此前只有代码级/审核级证据；历史 16/16 实盘失败）。
+- 尚未实测：`INPUT_BUSY` 占用保护（需先在你输入框里留未发送文字再派任务，会打扰你，故未做）、无标签页时 30s 自动补建、静置 5 分钟 SW 不休眠。
+- 经验固化：**扩展重载后必须刷新已打开的 Gemini 标签页**（或依赖 NO_RESPONSE 自愈多一次重试）——见 lesson L-2026-0911-052。

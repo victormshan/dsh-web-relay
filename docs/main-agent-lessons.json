@@ -2,7 +2,7 @@
   "meta": {
     "schemaVersion": "0.1",
     "title": "dsh-web-relay 主 agent 语境能力 lesson 库（机器可读）",
-    "updatedAt": "2026-09-11T01:32:26.523Z",
+    "updatedAt": "2026-09-11T02:09:47.050Z",
     "carrierOf": "docs/main-agent-lesson-schema-v0.1.md",
     "statusConvention": "proposed（主 agent 产出）→ approved / in-runbook（用户或外部 AI 确认，记 confirmedBy/confirmedAt）；in-runbook=要点已并入 main-agent-runbook 正文；superseded=内容已并入他条（扩展值，机器消费时应跳过）",
     "confirmedAt": "2026-09-04T13:14:35.897Z",
@@ -827,6 +827,20 @@
       "status": "proposed",
       "suggested": "proposed",
       "recordedAt": "2026-09-11T01:32:26.521Z"
+    },
+    {
+      "id": "L-2026-0911-052",
+      "title": "Chrome 扩展重载后，已打开页面里的旧 content script 会变成孤儿：新后台 sendMessage 收不到响应（NO_RESPONSE），需刷新标签页或依赖自愈重试",
+      "category": "engineering-action",
+      "layer": "L1",
+      "trigger": "重载未打包扩展（chrome://extensions → 刷新）后立刻派发任务；或扩展更新后已有标签页仍持有旧版 content script",
+      "decision": "① 重载扩展后**先刷新相关页面标签**（或让自愈机制触发一次 reload）再验收；② 派发侧对 NO_RESPONSE 要做\"重载标签页 + 重试一次\"的自愈（已有实现，节流 60s），不要把它当\"通道不可用\"；③ 判据上区分三类失败：SEND_FAIL（页面在、按钮找不到）/ NO_RESPONSE（content script 不在）/ EMPTY_REPLY（发送成功但没抓到回复）——三者处置不同。",
+      "rationale": "MV3 扩展重载会重建 Service Worker 与扩展上下文，但已注入页面的 content script 不会自动更新/复活，此时后台的 tabs.sendMessage 直接失败；若把它误判为通道故障，会在\"扩展刚升级\"这一最常见的验收时刻得到错误结论",
+      "evidence": "2026-09-11 复测：重载 v0.4.1 后第一次派发 t0001 → 6s 内 NO_RESPONSE（Tab 1635932287 content script 未注入）；自愈 reload 后第二次 t0002 → done/answer=\"收到\"（约 50-60s），web-gemini 通道首次端到端成功",
+      "confidence": "high",
+      "status": "proposed",
+      "suggested": "proposed",
+      "recordedAt": "2026-09-11T02:09:47.049Z"
     }
   ]
 }
