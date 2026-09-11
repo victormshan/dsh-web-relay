@@ -21,8 +21,16 @@ const num = (v, d) => { const n = Number(v); return Number.isFinite(n) && n > 0 
 export const CFG = {
   port: Number(process.env.DSH_WEB_PORT) || 3080,
   checkMs: num(process.env.DSH_WEB_CHECK_MS, 5000),
-  timeoutMs: num(process.env.DSH_WEB_TIMEOUT_MS, 2000),
-  missN: Math.floor(num(process.env.DSH_WEB_MISS_N, 3)),
+  // v4.9.5（重启风暴修复）: 探针超时 2000 → 4000ms。
+  // 实测 /dsh-web-relay/health-check 原耗时稳定 ~1520ms（扫全部 expr + 两次 bridge HTTP），
+  // 2000ms 超时余量太小，负载稍高即超时；现已给该端点加 TTL 缓存（毫秒级），
+  // 但仍保留更宽的超时余量，避免"探针抖动 = 杀宿主"。
+  timeoutMs: num(process.env.DSH_WEB_TIMEOUT_MS, 4000),
+  // v4.9.5（重启风暴修复）: 连续失联阈值 3 → 6。
+  // 原值 3（约 15s）在机器繁忙/宿主刚重启（bootResumeScan 扫描期）时会误判，触发 kill+拉起；
+  // 重启后宿主更慢 → 再次误判 → 自我维持的重启风暴（2026-09-11 实测单日拉起宿主 18 次、
+  // 判定重启 37 次，主 agent 回合被反复打断）。6 次 ≈ 30s 连续失联才动手，仍能兜住真挂。
+  missN: Math.floor(num(process.env.DSH_WEB_MISS_N, 6)),
   restartDelayMs: num(process.env.DSH_WEB_RESTART_DELAY_MS, 2000),
   maxRestarts: Math.floor(num(process.env.DSH_WEB_MAX_RESTARTS, 3)),
   windowMs: num(process.env.DSH_WEB_WINDOW_MS, 10 * 60 * 1000),
@@ -45,8 +53,19 @@ export const CFG = {
   bridgePort: Number(process.env.DSH_WEB_BRIDGE_PORT) || 8899,
   bridgeCheckEvery: Math.floor(num(process.env.DSH_WEB_BRIDGE_CHECK_EVERY, 12)), // 每 N 个 tick 查一次桥
   bridgeIgnoreProc: process.env.DSH_WEB_BRIDGE_IGNORE_PROC === '1',               // 模拟：跳过进程存在性检查
-  bridgeWatchdogPath: process.env.DSH_BRIDGE_WATCHDOG_PATH
-    || (fs.existsSync('D:\\DSH\\dsh-web-gemini-ext\\bridge-watchdog.mjs') ? 'D:\\DSH\\dsh-web-gemini-ext\\bridge-watchdog.mjs' : '')
+  bridgeWatchdogPath: process.env.DSH_BRIDGE_WATCHDOG_PATH || ''                  // 空则运行时按默认候选路径探测（见 resolveBridgeWatchdogPath）
+}
+// v4.9.5（假告警修复）: 默认桥接守护路径改为**运行时解析**（原在模块加载时 existsSync 一次，
+// 若加载时路径不存在/被 env 置空，之后即使文件出现也永远判为"未配置路径"，
+// 于是每分钟刷一条"掉线但未配置路径"——实测该噪声刷了数小时，掩盖真实状态）。
+export const BRIDGE_WATCHDOG_CANDIDATES = [
+  'D:\\DSH\\dsh-web-gemini-ext\\bridge-watchdog.mjs',
+  'D:\\dsh relay test\\dsh-web-gemini-ext\\bridge-watchdog.mjs'
+]
+export function resolveBridgeWatchdogPath(cfg = CFG) {
+  if (cfg.bridgeWatchdogPath) return cfg.bridgeWatchdogPath
+  for (const c of BRIDGE_WATCHDOG_CANDIDATES) { try { if (fs.existsSync(c)) return c } catch { /* 忽略 */ } }
+  return ''
 }
 const healthUrl = () => `http://127.0.0.1:${CFG.port}/dsh-web-relay/health-check`
 const prepareUrl = () => `http://127.0.0.1:${CFG.port}/dsh-web-relay/admin/prepare-restart`
@@ -277,29 +296,41 @@ function checkRestartRequest() {
 
 let childBridge = null
 let bridgeDownStreak = 0
-const bridgeRestartTimes = []
+let bridgeLastLogKey = ''
+let bridgeLogRounds = 0
 async function auxBridgeTick() {
-  const b = await httpGetJson(bridgeProbeUrl(), 1500)
+  const b = await httpGetJson(bridgeProbeUrl(), 3000)
+  // v4.9.5（假告警修复）: 诊断串带上真实原因（超时 / HTTP 码 / 连接错误），
+  // 原实现只打"掉线"，无法区分"端口真没在听"与"探测方式/鉴权问题"，导致假告警无法定位。
+  const why = b.error ? `probe=${b.error}` : (b.httpOk ? `probe=HTTP ${b.statusCode ?? '?'} okFlag=${b.okFlag}` : 'probe=无响应')
   if (classifyProbe(b)) {
-    if (bridgeDownStreak > 0) { bridgeDownStreak = 0; log(`[bridge] 桥接恢复（8899 在线）`) }
+    if (bridgeDownStreak > 0) { bridgeDownStreak = 0; log(`[bridge] 桥接恢复（8899 在线，本轮探针正常）`) }
+    bridgeLastLogKey = ''
+    bridgeLogRounds = 0
     return
   }
   bridgeDownStreak += 1
   if (bridgeDownStreak < 2) return // 首轮只观察：给既有 DSH-Bridge-Watchdog 自愈窗口（RESTART_DELAY 2s + CHECK 5s）
   const wdAlive = bridgeWatchdogRunning()
-  const d = bridgeDecision({ bridgeAlive: false, watchdogAlive: wdAlive, path: CFG.bridgeWatchdogPath })
+  const wdPath = resolveBridgeWatchdogPath()
+  const d = bridgeDecision({ bridgeAlive: false, watchdogAlive: wdAlive, path: wdPath })
+  // 去重限流：同一原因只在原因变化时或每 10 轮打一次，避免每分钟刷同一条噪声（此前刷了数小时）
+  const logKey = `${d.action}|${wdAlive}|${why}`
+  bridgeLogRounds += 1
+  const shouldLog = logKey !== bridgeLastLogKey || bridgeLogRounds % 10 === 1
+  bridgeLastLogKey = logKey
   if (d.action === 'watchdog-holds') {
-    log(`[bridge] 8899 掉线但 DSH-Bridge-Watchdog 进程在（自愈中，观察第 ${bridgeDownStreak} 轮）`)
+    if (shouldLog) log(`[bridge] 8899 掉线但 DSH-Bridge-Watchdog 进程在（自愈中，观察第 ${bridgeDownStreak} 轮；${why}）`)
   } else if (d.action === 'no-config') {
-    log('[bridge] 8899 掉线且 watchdog 未运行，但未配置路径（DSH_BRIDGE_WATCHDOG_PATH），跳过')
+    if (shouldLog) log(`[bridge] 8899 掉线且 watchdog 未运行，且候选路径均不存在（${BRIDGE_WATCHDOG_CANDIDATES.join(' ; ')}；${why}），跳过`)
   } else if (d.action === 'spawn-watchdog') {
     const att = attemptRestart(bridgeRestartTimes)
     if (!att.allowed) { log(`[bridge] 防风暴暂停：${Math.round(att.pauseRemainingMs / 1000)}s（窗口内已拉 ${bridgeRestartTimes.length} 次）`); return }
     if (CFG.dryRun) {
-      log(`[DRYRUN][bridge] 8899 掉线且 DSH-Bridge-Watchdog 未运行 → 将拉起 ${d.path}`)
+      log(`[DRYRUN][bridge] 8899 掉线且 DSH-Bridge-Watchdog 未运行 → 将拉起 ${d.path}（${why}）`)
       return
     }
-    log(`[bridge] 8899 掉线且 DSH-Bridge-Watchdog 未运行 → 拉起 ${d.path}`)
+    log(`[bridge] 8899 掉线且 DSH-Bridge-Watchdog 未运行 → 拉起 ${d.path}（${why}）`)
     childBridge = spawn(CFG.nodeExe, [d.path], { stdio: ['ignore', 'ignore', 'ignore'], windowsHide: true })
     childBridge.on('exit', (code) => { log(`[bridge] DSH-Bridge-Watchdog 退出（code=${code}）；下轮复查`); childBridge = null })
     childBridge.on('error', (err) => { log(`[bridge] 拉起失败：${err.message}`); childBridge = null })
