@@ -2,7 +2,7 @@
   "meta": {
     "schemaVersion": "0.1",
     "title": "dsh-web-relay 主 agent 语境能力 lesson 库（机器可读）",
-    "updatedAt": "2026-09-11T02:09:47.050Z",
+    "updatedAt": "2026-09-11T13:06:25.004Z",
     "carrierOf": "docs/main-agent-lesson-schema-v0.1.md",
     "statusConvention": "proposed（主 agent 产出）→ approved / in-runbook（用户或外部 AI 确认，记 confirmedBy/confirmedAt）；in-runbook=要点已并入 main-agent-runbook 正文；superseded=内容已并入他条（扩展值，机器消费时应跳过）",
     "confirmedAt": "2026-09-04T13:14:35.897Z",
@@ -841,6 +841,34 @@
       "status": "proposed",
       "suggested": "proposed",
       "recordedAt": "2026-09-11T02:09:47.049Z"
+    },
+    {
+      "id": "L-2026-0911-053",
+      "title": "用户视角 ≠ 系统实况：pinned 后台标签页\"看不见\"会导致误判功能失败；判定要靠系统自报的可观测字段，并主动补埋点而不是靠肉眼",
+      "category": "engineering-action",
+      "layer": "L1",
+      "trigger": "用户报\"某自动化动作没发生\"，但系统侧指标（此处 isReady=true）显示正常；或某能力只有\"外部可见的副作用\"可作判据（标签页、窗口、通知、文件）",
+      "decision": "① 先别改代码，先造**系统自报字段**（本例 tc=标签页数 / tinfo=pinned+active+windowId+url / ens=补建结果）把黑盒变白盒；② 判定以字段为准，不以\"用户肉眼没看到\"为准（pinned 后台标签页、最小化窗口、第二窗口都会被忽略）；③ 无副作用分支也必须**照常上报**（原实现无标签页时直接 return 不轮询 → 外部连\"它在跑\"都看不到）；④ 粘性状态字段（缺省不更新）必须配合\"明确上报缺失态\"，否则\"没有\"与\"没上报\"无法区分",
+      "rationale": "自动化动作经常在\"用户看不见的地方\"发生（后台标签页/最小化窗口）。用外部可观察副作用当唯一判据，会把\"没看见\"误判成\"没发生\"，进而去修一个本来就是好的功能——本例中补建其实已稳定工作 4 小时",
+      "evidence": "2026-09-11 实测：用户报\"无标签页、无补建\"，但 bridge 收到 isReady=true；加 v0.4.2 埋点后 /stats.worker 显示 tabCount=1、tabInfo=p-w1635932285/app/f8e98a8f44d5836a（pinned 后台，存活 4h）；用户关闭后 tabCount=0→25s 后 ens=created 补建成功",
+      "confidence": "high",
+      "status": "proposed",
+      "suggested": "proposed",
+      "recordedAt": "2026-09-11T13:06:25.002Z"
+    },
+    {
+      "id": "L-2026-0911-054",
+      "title": "自研健康探针 + 敏感阈值 = 自杀式重启风暴：探针端点必须 O(1)，阈值必须容忍冷启动与机器繁忙",
+      "category": "engineering-action",
+      "layer": "L2",
+      "trigger": "自研 watchdog/守护进程按\"探针失败 N 次 → 重启进程\"策略守护宿主/服务；探针端点自身需要读盘/聚合/发起 HTTP",
+      "decision": "① 探针端点必须**幂等且 O(1)**：聚合类结果加 TTL 缓存 + 后台刷新，绝不在探针路径上做全量扫描；② 阈值要给足余量（本例探针超时 2000→4000ms、连续失联 3→6 次≈30s），并区分\"进程真的没了\"与\"只是响应慢\"；③ 启动日志必须打印生效参数（本例 \"miss ≥ 6 重启\"），否则\"参数改了没生效\"无从验证；④ 出现重启风暴时先停守护进程止血，再修根因（停守护不影响宿主）",
+      "rationale": "探针失败 → 杀进程 → 进程重启后冷启动更慢 → 探针更易失败，这个正反馈会把偶发抖动放大成持续风暴（本例单日拉起宿主 18 次、判定重启 37 次，主 agent 回合被反复打断，用户观感是\"Agent 老是掉线\"）",
+      "evidence": "2026-09-11 实测：/dsh-web-relay/health-check 稳定耗时 ~1520ms（全量 expr 扫描 + 两次 bridge HTTP）vs 探针超时 2000ms；watchdog 日志 \"miss 1/3→2/3→连续 miss 3 次→重启宿主（err=timeout）\" 每 10-20s 一次；修复后 health-check 加 15s TTL 缓存、阈值 6/4000ms，日志变为 \"miss 1/6 → 宿主恢复\"，零重启",
+      "confidence": "high",
+      "status": "proposed",
+      "suggested": "proposed",
+      "recordedAt": "2026-09-11T13:06:25.004Z"
     }
   ]
 }

@@ -177,3 +177,36 @@ content script 的 `setInputValue()` 直接写入 composer，**若用户当时�
 - 结论：**"通道真实可用"这一档验收通过**（此前只有代码级/审核级证据；历史 16/16 实盘失败）。
 - 尚未实测：`INPUT_BUSY` 占用保护（需先在你输入框里留未发送文字再派任务，会打扰你，故未做）、无标签页时 30s 自动补建、静置 5 分钟 SW 不休眠。
 - 经验固化：**扩展重载后必须刷新已打开的 Gemini 标签页**（或依赖 NO_RESPONSE 自愈多一次重试）——见 lesson L-2026-0911-052。
+
+## 9. v0.4.2：补建可观测性埋点 + P0 标签页补建最终验收（通过）
+
+### 9.1 为什么要埋点（本轮排查的真实教训）
+现象：用户报"没有 Gemini 标签页、也没看到补建"，但同一时刻 bridge 侧上报 `isReady=true`（= content script
+探针成功返回）。矛盾无法判定，因为**补建这件事在外部完全黑盒**：
+- 旧实现"无标签页"分支**直接 return、不轮询 bridge** → `pollCount` 停更，与"SW 死了"无法区分；
+- worker 字段是**粘性**的（缺省不更新）→ "无标签页"与"页面没就绪"都表现为旧值；
+- pinned 后台标签页在标签栏最左侧且非激活，**用户肉眼很容易忽略**（实测该标签页以 `pinned:true, active:false`
+  存活了 4 小时，用户一直以为它不存在）。
+
+### 9.2 改动（v0.4.1 → v0.4.2）
+- `background.js`：无标签页分支改为**照常上报**（`authState=UNKNOWN&isReady=0&tc=0&ens=<结果>`），
+  不再静默 return；新增 `tabCount`/`ensureResult` 状态；有标签页时附带**标签页指纹**
+  `tinfo=<p|-><a|->w<windowId><urlPath>`（p= pinned、a= active）。
+- `bridge-server.mjs`：解析并暴露 `tc`/`ens`/`tinfo` → `/stats.worker.{tabCount,ensure,tabInfo}`。
+
+### 9.3 最终验收证据链（2026-09-11，实测）
+采样 2s 一次读 `/stats.worker`：
+
+| 时刻 | tabCount | tabInfo | ensure | isReady | 事件 |
+|---|---|---|---|---|---|
+| +94s | 1 | `p-w1635932285/app/…` | created | true | 09:04:56 补建的 pinned 后台标签页仍在（存活 4h） |
+| +99s | **0** | — | throttled | **false** | 用户关闭标签页 → 扩展**如实上报无标签页** |
+| +99→121s | 0 | — | throttled | false | 30s 补建节流窗口 |
+| **+124s** | **1** | `p-w1635932285/app` | **created:1635932384** | true | **自动补建新 pinned 后台标签页（25s，验收≤30s 通过）** |
+
+补建后立即派发真实任务：`只回复两个字：可以` → **`done` / answer=`"可以"`**（约 35s）——
+新标签页端到端可用。**P0 标签页存在性/P1 健康上报/发送链路三条验收至此全部通过。**
+
+### 9.4 附带收益
+无标签页时 `isReady=0` 会让 bridge **立即**把 pending/processing 任务判 failed（`扩展侧不可用：…`），
+宿主随即续降下一通道——不再出现"通道静默不可用、宿主干等 60s"的旧病（该状态现在也可从 `/stats.worker.tabCount=0` 直接看出）。
