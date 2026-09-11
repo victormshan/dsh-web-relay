@@ -2,7 +2,7 @@
   "meta": {
     "schemaVersion": "0.1",
     "title": "dsh-web-relay 主 agent 语境能力 lesson 库（机器可读）",
-    "updatedAt": "2026-09-10T21:12:09.423Z",
+    "updatedAt": "2026-09-11T00:29:04.730Z",
     "carrierOf": "docs/main-agent-lesson-schema-v0.1.md",
     "statusConvention": "proposed（主 agent 产出）→ approved / in-runbook（用户或外部 AI 确认，记 confirmedBy/confirmedAt）；in-runbook=要点已并入 main-agent-runbook 正文；superseded=内容已并入他条（扩展值，机器消费时应跳过）",
     "confirmedAt": "2026-09-04T13:14:35.897Z",
@@ -799,6 +799,20 @@
       "status": "proposed",
       "suggested": "proposed",
       "recordedAt": "2026-09-10T21:12:09.422Z"
+    },
+    {
+      "id": "L-2026-0911-050",
+      "title": "同一能力的多条调用路径必须传\"同源开关\"：新增/新接入的请求级参数在单步、批量、降级等每条路径都要同步，否则该路径上的安全网静默失效（漏参型缺陷）",
+      "category": "engineering-action",
+      "layer": "L2",
+      "trigger": "给某能力加请求级开关或新增第 N 个参数时；该能力存在多条调用路径（单步 / 批量并发 / 降级分支 / 后台定时触发）；实测只覆盖了其中一条路径",
+      "decision": "① 加参数时立即 grep 该被调函数的**所有调用点**（本例 `obtainReviewVerdict` / `reviewOneStep`），逐点确认传参；② 写**源码级接线回归测试**（括号配对提取每个调用点的实参文本，断言都含该开关，且由同一请求级表达式驱动），因为纯函数单测无法发现\"调用点漏参\"；③ 做**反向验证**（人为去掉该参数跑一次，确认用例 FAIL）——否则用例可能恒真；④ 文档承诺（如\"请求级开关\"）必须与实际每条路径一致，不一致即静默放行",
+      "rationale": "漏参型缺陷的表现为\"功能没生效但无任何报错\"：被调函数收到 undefined 后按默认关闭处理，单步路径实测正常会让人误判功能已生效；本例丢掉的偏偏是\"两条通道结论冲突 → 升级人工\"的安全网，属于静默放行风险最大的那类",
+      "evidence": "claude-code 审核 rev-1a08b804718（Step xc3）REJECT：`lib/index.js:3547` 批量分支（batchStepIds）只传 6 参、遗漏 `enableCrossCheck`，而单步路径 `lib/index.js:3622` 正确传第 7 参 → `shouldCrossCheck(step, undefined)` 恒 false；该缺陷在上一轮收口时被误记为\"已修\"（git log -S 证实从未提交修复，工作树实证：批量调用点仍缺该参）。2026-09-11 修复：批量路径补传 + `test/cross-check.test.js` 两条源码级接线用例（反向验证为 13 pass/1 fail），全量 419/419 绿",
+      "confidence": "high",
+      "status": "proposed",
+      "suggested": "proposed",
+      "recordedAt": "2026-09-11T00:29:04.729Z"
     }
   ]
 }

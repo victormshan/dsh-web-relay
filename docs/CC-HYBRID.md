@@ -152,4 +152,9 @@ curl -X POST http://127.0.0.1:3080/dsh-web-relay/route/decide -H 'content-type: 
   - **冲突**（一 approved 一 rejected）→ `escalate-conflict`：不自动判定，返回 `manual: true` 由前端展开人工裁决框
   - 任一方无结论/无法识别 → `escalate-unusable`（不得由单方结论自动采信）
 - 请求级开关：`POST /steps/auto-review` body 增 `enableCrossCheck: true`（配合 `shouldCrossCheck` 门控：仅显式开启且 importance=high 生效）。
+  - ⚠️ v4.9.4 修复（claude-code 审核 `xc3` 发现）：批量分支（`batchStepIds`）原先只传 6 个参数、**遗漏第 7 参 `enableCrossCheck`**
+    → `shouldCrossCheck(step, undefined)` 恒 false → 凡走批量接口的 high 步骤，交叉校验（含"结论冲突升人工"的安全网）**静默失效**，
+    而单步分支一直正确（文档承诺"请求级开关"与实现对不上，属静默放行）。现已让两条入口传同一请求级开关，
+    并在 `test/cross-check.test.js` 加**源码级接线回归**（括号配对提取每个 `obtainReviewVerdict` / `reviewOneStep` 调用点，
+    断言都传该开关且由 `payload.enableCrossCheck === true` 驱动）；反向验证：人为去掉第 7 参时该用例 FAIL（13 pass/1 fail）。
 - 通道不可用与结论冲突严格区分：次通道（cc）不可用时**采信主通道并标注"交叉校验未完成"**，避免把"通道故障"误升级为人工。

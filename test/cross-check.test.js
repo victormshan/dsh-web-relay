@@ -5,6 +5,7 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
 import { crossCheckVerdicts, shouldCrossCheck, CROSS_CHECK_STATES } from '../lib/cross-check.js'
 
 test('cross-check: 双方 approved → consensus-approved（不升级）', () => {
@@ -104,4 +105,60 @@ test('shouldCrossCheck: 仅 enableCrossCheck=true 且 importance=high 才启用'
   assert.equal(shouldCrossCheck({ importance: 'low' }, true), false)
   assert.equal(shouldCrossCheck({}, true), false)                          // 未声明 importance
   assert.equal(shouldCrossCheck(null, true), false)                        // 容错
+})
+
+// ---- 接线回归（claude-code 审核 xc3 发现的事故类：参数漏传 → 开关静默失效）----
+// 事故复盘：/steps/auto-review 的批量分支（batchStepIds）只传 6 个参数，遗漏第 7 参
+// enableCrossCheck → shouldCrossCheck(step, undefined) 恒 false → 凡走批量接口的高权重步骤，
+// 双通道交叉校验（含"结论冲突升人工"的安全网）静默失效；单步分支一直正确 → 差异极难被单步实测发现。
+// 本用例锁死"两个调用点都必须传该开关"，防止同类漏参回归。
+
+/** 提取 src 中所有 `await <name>(...)` 调用点的完整实参文本（括号配对，支持跨行）。 */
+function awaitCallSites(src, name) {
+  const sites = []
+  const re = new RegExp(`await\\s+${name}\\s*\\(`, 'g')
+  let m
+  while ((m = re.exec(src)) !== null) {
+    const open = src.indexOf('(', m.index)
+    let depth = 0
+    let end = -1
+    for (let i = open; i < src.length; i += 1) {
+      const ch = src[i]
+      if (ch === '(') depth += 1
+      else if (ch === ')') {
+        depth -= 1
+        if (depth === 0) { end = i; break }
+      }
+    }
+    if (end > open) sites.push(src.slice(m.index, end + 1))
+  }
+  return sites
+}
+
+test('接线：obtainReviewVerdict 的每个调用点（透传点 + 批量点）都传 enableCrossCheck', () => {
+  const src = fs.readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8')
+  const sites = awaitCallSites(src, 'obtainReviewVerdict')
+  assert.ok(sites.length >= 2, `预期至少 2 个调用点（reviewOneStep 内透传 + 批量路径），实际 ${sites.length}`)
+  for (const s of sites) {
+    assert.ok(
+      s.includes('enableCrossCheck'),
+      `调用点遗漏 enableCrossCheck（该路径交叉校验会静默失效）：\n${s.slice(0, 240)}`,
+    )
+  }
+})
+
+test('接线：两条请求级入口（单步 reviewOneStep + 批量 mapLimit）都传 payload.enableCrossCheck', () => {
+  const src = fs.readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8')
+  // 单步入口：路由处理器里 reviewOneStep(...) 的调用点
+  const single = awaitCallSites(src, 'reviewOneStep')
+  assert.equal(single.length, 1, `预期 1 个 reviewOneStep 调用点，实际 ${single.length}`)
+  assert.match(single[0], /payload\.enableCrossCheck\s*===\s*true/, '单步入口未传请求级 enableCrossCheck')
+  // 批量入口：批量分支内的 obtainReviewVerdict 调用点（用批量分支标记定位，避免依赖行号）
+  const batchStart = src.indexOf('batchStepIds.length > 0')
+  assert.ok(batchStart > 0, '未找到批量审核分支标记 batchStepIds.length > 0')
+  const batchSites = awaitCallSites(src.slice(batchStart), 'obtainReviewVerdict')
+  assert.ok(batchSites.length >= 1, '批量分支内未找到 obtainReviewVerdict 调用点')
+  for (const s of batchSites) {
+    assert.match(s, /payload\.enableCrossCheck\s*===\s*true/, `批量入口未传请求级 enableCrossCheck：\n${s.slice(0, 240)}`)
+  }
 })
