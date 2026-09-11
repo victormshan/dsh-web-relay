@@ -2,7 +2,7 @@
   "meta": {
     "schemaVersion": "0.1",
     "title": "dsh-web-relay 主 agent 语境能力 lesson 库（机器可读）",
-    "updatedAt": "2026-09-11T00:29:04.730Z",
+    "updatedAt": "2026-09-11T01:32:26.523Z",
     "carrierOf": "docs/main-agent-lesson-schema-v0.1.md",
     "statusConvention": "proposed（主 agent 产出）→ approved / in-runbook（用户或外部 AI 确认，记 confirmedBy/confirmedAt）；in-runbook=要点已并入 main-agent-runbook 正文；superseded=内容已并入他条（扩展值，机器消费时应跳过）",
     "confirmedAt": "2026-09-04T13:14:35.897Z",
@@ -813,6 +813,20 @@
       "status": "proposed",
       "suggested": "proposed",
       "recordedAt": "2026-09-11T00:29:04.729Z"
+    },
+    {
+      "id": "L-2026-0911-051",
+      "title": "端到端实测会写入用户的真实环境：派发前必须先声明，且被测系统自身要有\"不覆盖用户数据\"的设计；审核通过 ≠ 真实可用",
+      "category": "engineering-action",
+      "layer": "L1",
+      "trigger": "为了验证通道/集成\"真的能跑\"，直接向用户真实环境（浏览器页面、生产账号、真实会话）派发测试任务时",
+      "decision": "① 实测前在同一回合明确声明\"将向你的 X 写入测试数据\"再执行，不做静默写入；② 被测链路必须具备占用检测（如输入框非空即拒绝），并保证失败后清理自己写入的残留；③ 验收标准要分\"代码级/单元级\"与\"实盘级\"两档，只有实盘级才算通道可用；④ 代码/审核通过 ≠ 真实可用——本 expr 收口时三步全 approved，实盘一跑就暴露发送链路失效。",
+      "rationale": "三方协作的审核看的是代码与自述证据，无法覆盖\"真实 UI 是否配合\"；若把审核通过当成通道可用，就会在真正需要降级通道时才发现不可用。而向用户环境写入测试数据不声明，会直接破坏用户正在进行的工作（本次实测覆盖了用户正在输入的内容）",
+      "evidence": "2026-09-11 实盘实测（bridge /create-task）：扩展 v0.4.0 生效（authState=OK/isReady=true）、1.0s 认领、选择器命中，但 SEND_FAIL（发送按钮未识别、Enter 无效），78s 判 failed；同时 content script 覆盖了用户 Gemini 输入框中的内容（用户反馈\"我的输入没了\"）。修复：v0.4.1 加 INPUT_BUSY 占用保护 + 失败清理残留 + 发送候选链/Enter/requestSubmit 三路 + 失败 DOM 自诊断 + SEND_FAIL 触发 reload 自愈",
+      "confidence": "high",
+      "status": "proposed",
+      "suggested": "proposed",
+      "recordedAt": "2026-09-11T01:32:26.521Z"
     }
   ]
 }

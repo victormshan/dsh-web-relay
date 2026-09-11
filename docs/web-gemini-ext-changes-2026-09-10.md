@@ -126,3 +126,40 @@ v0.4.0 加固版；扩展侧却加载自 workspace 目录的 v0.3.0 → **两侧
 多副本（开发 / 运行 / 工作副本）必须哈希一致后才算完成，收尾以"重载后生效"为验收前提。
 另注意 `/stats.worker.authState` 是**粘性字段**（仅在被上报时更新），
 在扩展尚未支持 page-health 上报（旧版）时，它可能是历史手工测试值，不能当作"扩展已上报"的证据。
+
+## 8. v0.4.1：实盘端到端实测暴露的两个问题（用户输入覆盖 + 发送链路失效）
+
+### 8.1 实测方式与结果（2026-09-11，扩展重载 v0.4.0 后）
+经 bridge 直接派发真实任务（`POST /create-task` → `GET /task-result/<id>`）：
+
+| 环节 | 结果 | 证据 |
+|---|---|---|
+| 扩展新代码是否生效 | ✅ | `/stats.worker` 由手工测试值 `LOGGED_OUT` 变为 **`authState=OK, isReady=true`**（只有 v0.4.0+ 的 page-health 探针会上报） |
+| 有 Gemini 标签页 | ✅ | 任务创建后 **1.0s** 被认领（`claimCount` +1，`claimedAt`） |
+| 输入框选择器降级链 | ✅ | 命中 contenteditable 并成功写入 prompt |
+| **发送** | ❌ | `SEND_FAIL: 按钮=?(disabled=undefined)`，Enter 重试后文案仍残留 → 78s 后判 failed |
+| 自愈 | ❌ | 原实现 `SEND_FAIL` 既不设 needsReload 也不清理残留（正是 claude-code 审核 Step 2 指出的盲区） |
+
+### 8.2 事故：端到端实测覆盖了用户正在输入的内容
+content script 的 `setInputValue()` 直接写入 composer，**若用户当时正在输入会被静默覆盖**；
+发送失败后测试文案还残留在输入框里（用户侧表现："我的输入没了"）。这是主 agent 侧的执行纪律问题
+（未声明就向用户真实页面写入）+ 扩展侧的设计缺陷（无"占用检测"），两侧都修。
+
+### 8.3 v0.4.1 改动（`content.js`；版本 0.4.0 → 0.4.1）
+1. **用户输入保护**：覆盖前先 `readInput()`，非空即视为用户正在输入 → 抛 `INPUT_BUSY` 放弃本次发送
+   （不覆盖、不残留、不 reload），交回宿主续降下一通道。
+2. **失败不留垃圾**：`SEND_FAIL` 时先 `clearInput()` 清掉自己写入的残留，再抛错。
+3. **发送链路加固**：成功判定改为"输入框清空 **或** 出现新回复节点"两个信号任一成立；
+   依次尝试 ① 显式发送按钮候选链（`data-test-id="send-button"`、`aria-label` 中英文变体、class 变体 + 语义兜底，多个候选逐个试）
+   ② Enter（先 `focus()`，派发到 `document.activeElement`——修复"外层 contenteditable 派发无效"）
+   ③ 所在 `<form>.requestSubmit()`。
+4. **失败自诊断**：`SEND_FAIL` 诊断串内含 `domDiagnostics()`——composer 内可见按钮（描述/标签/disabled）、
+   `activeElement`、三个入口选择器命中情况。目的是让"下一次失败"直接给出选择器证据，不必人工翻 DOM。
+5. **reload 自愈补盲**：`SEND_FAIL` 现在带 `needsReload` → background 节流重载页面一次（此前只覆盖
+   INPUT_NOT_FOUND / EMPTY_REPLY / NO_RESPONSE）。
+6. `innermostEditable()`：优先取最内层可编辑元素（Gemini composer 存在"外层可编辑 + 内层真正可编辑"嵌套，
+   读 `textContent` 会把子节点装饰文字（如 "Gemini"）算进来，事件也会派发到错误的节点）。
+
+### 8.4 生效条件与验收
+需再次重载扩展（manifest 版本变更 0.4.1）；`chrome://extensions` 卡片版本应显示 **0.4.1**。
+备份：`*.bak-v041-20260911-013158`。三副本同步后 SHA256 一致（content.js `fde6694ad5fb`）。
