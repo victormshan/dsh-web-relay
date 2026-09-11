@@ -2,7 +2,7 @@
   "meta": {
     "schemaVersion": "0.1",
     "title": "dsh-web-relay 主 agent 语境能力 lesson 库（机器可读）",
-    "updatedAt": "2026-09-11T13:06:25.004Z",
+    "updatedAt": "2026-09-11T17:56:43.406Z",
     "carrierOf": "docs/main-agent-lesson-schema-v0.1.md",
     "statusConvention": "proposed（主 agent 产出）→ approved / in-runbook（用户或外部 AI 确认，记 confirmedBy/confirmedAt）；in-runbook=要点已并入 main-agent-runbook 正文；superseded=内容已并入他条（扩展值，机器消费时应跳过）",
     "confirmedAt": "2026-09-04T13:14:35.897Z",
@@ -869,6 +869,20 @@
       "status": "proposed",
       "suggested": "proposed",
       "recordedAt": "2026-09-11T13:06:25.004Z"
+    },
+    {
+      "id": "L-2026-0911-055",
+      "title": "定位\"某服务偶发卡顿\"先用同机第二服务做对照（一次定性到进程级），再谈机器级原因；排除类改动必须前后测量，无收益即回滚",
+      "category": "engineering-action",
+      "layer": "L1",
+      "trigger": "某本地服务/进程响应偶发变慢（探针超时、请求 1-3s），但 CPU/磁盘/内存计数器看起来正常，怀疑杀软/磁盘/其他软件时",
+      "decision": "① 同一时刻并行采样\"可疑服务\"与\"同机另一个独立进程的轻端点\"，比较延迟分布——对照服务始终毫秒级 ⇒ 问题是**该进程内部**的，与机器/磁盘/杀软无关，省掉一轮轮无效猜测；② 再做\"是否与某个周期性任务相关\"的相关性检验（如把请求延迟与缓存年龄/定时器周期对齐）；③ 采样要覆盖\"我活跃\"与\"我空闲\"两种状态（本次空闲窗口 40 次全快、活跃窗口 23% 慢，差异就是线索）；④ 任何\"降低安全/权限\"的排除类改动，改前测一次、改后测一次，没改善就立刻回滚并说明。",
+      "rationale": "偶发卡顿最容易让人去打\"杀软/磁盘/网络\"这些常见嫌疑，但计数器往往看不出问题，于是改动一个接一个、每次都要重启验证，成本极高。对照法是几分钟内出结论的判别实验：把\"机器级\"和\"进程级\"一刀切开。另外把带安全成本的改动当\"顺手优化\"是负收益——实测 Defender 排除对本例 0 改善。",
+      "evidence": "2026-09-11 实测：宿主 3080 P90=1908ms（23% 慢）而 bridge 8899 P90=4ms（0 慢），慢样本中宿主 2503ms 时 bridge 11ms → 判定宿主进程内停顿；Defender 排除前后 8.5%→9%（无改善）已回滚；空闲窗口 40 次采样全部 23-90ms，指向回合处理期内部工作（会话落盘/GC）",
+      "confidence": "high",
+      "status": "proposed",
+      "suggested": "proposed",
+      "recordedAt": "2026-09-11T17:56:43.404Z"
     }
   ]
 }
