@@ -426,3 +426,32 @@
   lastVerified: 2026-09-10
   status: approved
   version: 1
+
+- id: harness-line-compatibility
+  name: dsh 版本线兼容矩阵（本插件可用 dsh 版本的单一事实来源）
+  category: platform
+  scope: harness-compat
+  source: docs/COMPATIBILITY.md
+  skill: null
+  trigger: 升级/切换 dsh 版本前确认插件可用性；boot 出现 "did not activate" / "waiting for service: apiProxy"；判断该回 rc.7 还是给新线装 dsh-apiproxy-shim
+  conflicts: []
+  verification:
+    - file-exists: docs/COMPATIBILITY.md
+    - content-contains:
+        file: docs/COMPATIBILITY.md
+        text: "兼容矩阵"
+    - content-contains:
+        file: docs/COMPATIBILITY.md
+        text: "0.1.5+"
+    - content-contains:
+        file: docs/COMPATIBILITY.md
+        text: "apiProxyAvailable"
+    - content-contains:
+        file: package.json
+        text: harnessLine
+    - content-contains:
+        file: lib/index.js
+        text: "docs/COMPATIBILITY.md"
+  lastVerified: 2026-09-13
+  status: approved
+  version: 1

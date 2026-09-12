@@ -16,6 +16,23 @@
     },
     "client": {
       "platform": "web"
+    },
+    "compat": {
+      "harness": "0.1.0-rc.7",
+      "harnessLine": "rc7",
+      "requiresServices": [
+        "webServer",
+        "fs",
+        "sandboxPolicy",
+        "apiProxy",
+        "agentDefaultModel"
+      ],
+      "incompatibleWith": [
+        "0.1.5+"
+      ],
+      "reason": "apiProxy 为硬注入；新线 0.1.5+ 已整包移除 @deepseek-ai/dsh-host-apiproxy，entry 会 pending 并使宿主 boot 断言失败（2 entries did not activate）",
+      "verifiedAt": "2026-09-13",
+      "doc": "docs/COMPATIBILITY.md"
     }
   },
   "files": [
@@ -36,6 +53,7 @@
     "docs/claude-self-description-2026-09-07.md",
     "docs/LINUX-PORT.md",
     "docs/INSTALL-NEW-ENV.md",
+    "docs/COMPATIBILITY.md",
     "docs/protocol-v2-understanding-2026-09-07.md",
     "docs/capabilities/README.md",
     "docs/capabilities/registry.yaml",

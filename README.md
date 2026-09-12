@@ -41,6 +41,19 @@ dsh plugin --profile web add dsh-web-relay
 - watchdog：Windows 计划任务 / Linux systemd（scripts/install-new-env.* 自动注册）
 - env：`DSH_RELAY_REPO`（装配指针）/ `DSH_CC_TASKS_ROOT`（cc 派发目录）/ `GEMINI_API_KEY`（Linux 写 `~/.dsh/env`，Windows 注册表）/ `DSH_SESSION_ID`（无介入续跑注入）
 
+## 兼容的 dsh 版本
+
+> 单一事实来源：`docs/COMPATIBILITY.md`（**升级 dsh 前先看这里**）。
+
+| 本插件版本 | 可用 dsh 版本 | 依赖 |
+|---|---|---|
+| **4.9.2** | **0.1.0-rc.7 线** | 硬依赖 `apiProxy` 服务（rc.7 由 `@deepseek-ai/dsh-host-apiproxy` 提供）+ `webServer` / `fs` / `sandboxPolicy` / `agentDefaultModel` |
+
+⚠ **0.1.5+（新线）与本版不兼容**：新线已移除 `apiProxy` 服务，`dsh-web-relay` / `dsh-side-window` 会停在 `pending (waiting for service: apiProxy)`，使 `dsh web` 以
+`Error: dsh: 2 entries did not activate` **启动失败**（2026-09-13 实测）。应急：在 profile 的 `cordis.patch.yml` 里注释掉这两行 insert——插件整体停用，宿主可起（`/dsh-web-relay/*` 返回 404）。
+
+自检：`curl.exe -s "http://127.0.0.1:3080/dsh-web-relay/status?token=<TOKEN>"` → 看 `apiProxyAvailable`。
+
 ## 权限与安全说明
 
 - **审核链审计**：每次 approved/rejected 记录 `reviewedBy / providerLabel / fallbackReason / channel`（frontmatter + steps notes），全程可溯源。
@@ -59,6 +72,7 @@ dsh plugin --profile web add dsh-web-relay
 | [OPS-RESTART-RESUME.md](docs/OPS-RESTART-RESUME.md) | 宿主托管与重启续跑 SOP（含无介入续跑实证 §6）|
 | [INSTALL-NEW-ENV.md](docs/INSTALL-NEW-ENV.md) | 新环境三步安装（插件/能力包/环境件 + 装后清单）|
 | [LINUX-PORT.md](docs/LINUX-PORT.md) | WSL/Linux 移植（兼容矩阵/platform-ops 适配/限制）|
+| **[COMPATIBILITY.md](docs/COMPATIBILITY.md)** | **可用 dsh 版本兼容矩阵**（升级 dsh 前必读：apiProxy 硬注入约束 / 新线不兼容症状 / 自检命令）|
 | [capabilities/registry.yaml](docs/capabilities/registry.yaml) | 能力索引 17 条（verification 自动校验）|
 | [main-agent-lessons.json](docs/main-agent-lessons.json) | 37 条事故复盘（跨会话避坑）|
 | [main-agent-runbook-v0.1.md](docs/main-agent-runbook-v0.1.md) | 主 agent 执行手册（纪律 §2.7 重启/续跑/回合闭环）|
