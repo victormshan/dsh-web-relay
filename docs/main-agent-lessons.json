@@ -2,7 +2,7 @@
   "meta": {
     "schemaVersion": "0.1",
     "title": "dsh-web-relay 主 agent 语境能力 lesson 库（机器可读）",
-    "updatedAt": "2026-09-11T17:56:43.406Z",
+    "updatedAt": "2026-09-12T12:35:09.581Z",
     "carrierOf": "docs/main-agent-lesson-schema-v0.1.md",
     "statusConvention": "proposed（主 agent 产出）→ approved / in-runbook（用户或外部 AI 确认，记 confirmedBy/confirmedAt）；in-runbook=要点已并入 main-agent-runbook 正文；superseded=内容已并入他条（扩展值，机器消费时应跳过）",
     "confirmedAt": "2026-09-04T13:14:35.897Z",
@@ -883,6 +883,20 @@
       "status": "proposed",
       "suggested": "proposed",
       "recordedAt": "2026-09-11T17:56:43.404Z"
+    },
+    {
+      "id": "L-2026-0912-056",
+      "title": "测量工具用错会造出假 bug：复算/诊断必须使用运行时的真实参数与真实渲染路径，否则会把自己的参数错误当成系统缺陷（同一天内犯两次）",
+      "category": "engineering-action",
+      "layer": "L1",
+      "trigger": "用离线脚本复算某个纯函数、或用 dump/诊断命令推断\"配置是否生效\"时；结论与运行时观测不一致（如宿主报 0、复算报 4）",
+      "decision": "① 复算前先从源码/运行态抄出**真实参数**（本例心跳实际是 staleMs=20min、maxAgeMs=48h，我用了默认值/自设的 6h+30d → 凭空多出 4 条\"待办\"）；② 用 dump 类命令判断\"用户配置是否生效\"前，先做**对照实验**（给一个已知项设值，看它是否出现在 dump 里）——本例 `dsh --dump-config` 根本不渲染用户层 config，我却据此宣布\"anthropic 配置未生效\"，结论作废；③ 结论与观测冲突时，先怀疑测量方式，再怀疑系统；④ 宣布 bug 前把\"参数/命令 + 期望 + 实际\"三件套贴出来自检。",
+      "rationale": "假 bug 的代价是双向的：既浪费一轮排查与改动（去修一个本来没坏的东西），又可能据此做出错误决策（例如因\"配置不生效\"而重写配置）。而\"用错工具\"的迹象很明确——结论与运行时不一致，只要不急着下判断就能发现。",
+      "evidence": "2026-09-12 同一天两例：① 用 `--dump-config` 未出现 anthropic 段 → 断言\"patch 配置未生效\"；对照实验（给 session-title 设 fallbackMaxWords: 9，dump 仍显示 5）证明 dump 不渲染用户层，结论撤回；② 用默认参数复算心跳 → 得 4 条待办，与宿主 found=0 冲突；改用运行时真实参数（20min/48h）复算 → 0 条，宿主行为正确",
+      "confidence": "high",
+      "status": "proposed",
+      "suggested": "proposed",
+      "recordedAt": "2026-09-12T12:35:09.579Z"
     }
   ]
 }
