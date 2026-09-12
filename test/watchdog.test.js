@@ -145,3 +145,22 @@ test('source 标记：restart-now 子命令（bin/watchdog.mjs v4.4）', () => {
   assert.ok(src.includes('DRYRUN][restart-now'))
   assert.ok(src.includes('killPidTree(pid)'))
 })
+
+// v4.9.6 回归：auxBridgeTick 引用的模块级状态必须都有声明
+// 事故复盘：v4.9.5 重写 auxBridgeTick 时误删 `const bridgeRestartTimes = []`，
+// 而 attemptRestart(bridgeRestartTimes) 仍在引用 → 每分钟抛 ReferenceError
+// （日志实测 "[bridge] aux 检查异常：bridgeRestartTimes is not defined"）→ bridge 监护层静默失效。
+// 该类缺陷（改块时漏声明/漏参）纯函数单测覆盖不到，故用源码级接线断言锁死。
+test('回归：auxBridgeTick 依赖的模块级状态均已声明（防漏声明 → ReferenceError 静默失效）', () => {
+  const src = fs.readFileSync(new URL('../bin/watchdog.mjs', import.meta.url), 'utf8')
+  const names = ['childBridge', 'bridgeDownStreak', 'bridgeLastLogKey', 'bridgeLogRounds', 'bridgeRestartTimes']
+  for (const n of names) {
+    assert.match(
+      src,
+      new RegExp('(?:const|let|var)\\s+' + n + '\\b'),
+      `${n} 缺少 const/let/var 声明（auxBridgeTick 会抛 ReferenceError）`,
+    )
+  }
+  // 反向保证：attemptRestart 的调用点必须传入已声明的 bridgeRestartTimes
+  assert.ok(src.includes('attemptRestart(bridgeRestartTimes)'), 'attemptRestart 调用点应传 bridgeRestartTimes')
+})

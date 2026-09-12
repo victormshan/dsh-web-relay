@@ -296,6 +296,12 @@ function checkRestartRequest() {
 
 let childBridge = null
 let bridgeDownStreak = 0
+// v4.9.6（回归修复）: v4.9.5 重写 auxBridgeTick 时误删了本行声明，而下方
+// attemptRestart(bridgeRestartTimes) 仍在引用 → 每分钟抛 ReferenceError
+// （日志实测 "[bridge] aux 检查异常：bridgeRestartTimes is not defined"），
+// bridge 监护那一层静默失效。教训与 lesson 050 同类（改块时漏声明/漏参）；
+// 已补源码级回归测试（test/watchdog.test.js）。
+const bridgeRestartTimes = []
 let bridgeLastLogKey = ''
 let bridgeLogRounds = 0
 async function auxBridgeTick() {
