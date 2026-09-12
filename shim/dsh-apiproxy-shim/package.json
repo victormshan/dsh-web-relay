@@ -1,0 +1,13 @@
+{
+  "name": "dsh-apiproxy-shim",
+  "version": "0.1.0",
+  "description": "Compatibility shim: re-provides the rc.7 `apiProxy` service on harness 0.1.5+ by bridging apiProxy.sessions.prompt({rpcId,payload}) onto the new host service sessionController.prompt({requestId,sessionId,mode,content}).",
+  "private": true,
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "license": "MIT"
+}

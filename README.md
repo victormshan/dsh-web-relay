@@ -47,10 +47,11 @@ dsh plugin --profile web add dsh-web-relay
 
 | 本插件版本 | 可用 dsh 版本 | 依赖 |
 |---|---|---|
-| **4.9.2** | **0.1.0-rc.7 线** | 硬依赖 `apiProxy` 服务（rc.7 由 `@deepseek-ai/dsh-host-apiproxy` 提供）+ `webServer` / `fs` / `sandboxPolicy` / `agentDefaultModel` |
+| **4.9.7**（新线兼容版） | **0.1.0-rc.7 线** 与 **0.1.5+（新线）** | rc.7：宿主自带 `apiProxy`；新线：需随包 [`shim/dsh-apiproxy-shim`](shim/README.md)。两者均需 `webServer` / `fs` / `sandboxPolicy` / `agentDefaultModel` |
+| **4.9.2**（dsh 升级前的最后一版） | **0.1.0-rc.7 线** | 硬依赖 `apiProxy` 服务（rc.7 由 `@deepseek-ai/dsh-host-apiproxy` 提供） |
 
-⚠ **0.1.5+（新线）与本版不兼容**：新线已移除 `apiProxy` 服务，`dsh-web-relay` / `dsh-side-window` 会停在 `pending (waiting for service: apiProxy)`，使 `dsh web` 以
-`Error: dsh: 2 entries did not activate` **启动失败**（2026-09-13 实测）。应急：在 profile 的 `cordis.patch.yml` 里注释掉这两行 insert——插件整体停用，宿主可起（`/dsh-web-relay/*` 返回 404）。
+⚠ **4.9.2 及更早版本与 0.1.5+（新线）不兼容**：新线已移除 `apiProxy` 服务，`dsh-web-relay` / `dsh-side-window` 会停在 `pending (waiting for service: apiProxy)`，使 `dsh web` 以
+`Error: dsh: 2 entries did not activate` **启动失败**（2026-09-13 实测）。两条出路：① 装随包 shim（见 [`shim/README.md`](shim/README.md)）；② 应急在 profile 的 `cordis.patch.yml` 里注释掉这两行 insert 停用插件（宿主可起，`/dsh-web-relay/*` 返回 404）。
 
 自检：`curl.exe -s "http://127.0.0.1:3080/dsh-web-relay/status?token=<TOKEN>"` → 看 `apiProxyAvailable`。
 
@@ -73,6 +74,7 @@ dsh plugin --profile web add dsh-web-relay
 | [INSTALL-NEW-ENV.md](docs/INSTALL-NEW-ENV.md) | 新环境三步安装（插件/能力包/环境件 + 装后清单）|
 | [LINUX-PORT.md](docs/LINUX-PORT.md) | WSL/Linux 移植（兼容矩阵/platform-ops 适配/限制）|
 | **[COMPATIBILITY.md](docs/COMPATIBILITY.md)** | **可用 dsh 版本兼容矩阵**（升级 dsh 前必读：apiProxy 硬注入约束 / 新线不兼容症状 / 自检命令）|
+| [shim/README.md](shim/README.md) | 新线（dsh 0.1.5+）适配 shim：`apiProxy` → `sessionController.prompt` 桥接，安装与自检 |
 | [capabilities/registry.yaml](docs/capabilities/registry.yaml) | 能力索引 17 条（verification 自动校验）|
 | [main-agent-lessons.json](docs/main-agent-lessons.json) | 37 条事故复盘（跨会话避坑）|
 | [main-agent-runbook-v0.1.md](docs/main-agent-runbook-v0.1.md) | 主 agent 执行手册（纪律 §2.7 重启/续跑/回合闭环）|
@@ -82,6 +84,7 @@ dsh plugin --profile web add dsh-web-relay
 
 | 版本 | 协议 | 内容 |
 |---|---|---|
+| 4.9.7 | v2.0 | **dsh 版本线兼容声明 + 新线适配**：`dsh.compat` 元数据（rc.7 原生 / 0.1.5+ 需 shim）、随包 `shim/dsh-apiproxy-shim`（apiProxy → sessionController.prompt 桥接）、`docs/COMPATIBILITY.md` 兼容矩阵与自检、`test/compat-metadata.test.js` 回归 |
 | 4.9.2 | v2.0 | 混合架构前端入口（claude-code 面板选项）、心跳双保险、无介入续跑实证、新环境可迁移（files/dist/INSTALL）、WSL/Linux 移植（platform-ops/install.sh）、能力对比与走查文档 |
 | 4.9.1 | v2.0 | tailClip 审核上下文修复、kill-host 工具化、skill §5 重启/续跑纪律、lessons 035/036/037 |
 | 4.9.0 | v2.0 | 协议演进四方向：claude-code 降级链 + alternatives 裁决 + 并发审核批（外部 AI 排位 C→A→B→D）|
