@@ -131,3 +131,24 @@ watchdog 探针（`/dsh-web-relay/health-check`）曾间歇超时 → 连续 3 �
   两者叠加后，即使宿主偶发 2.5s 停顿也**不会再触发重启**（实测 20:47 起零重启、零 miss 行）。
 - 宿主侧停顿属环境固有，若观感变差：① 长会话换新会话（堆与会话日志更小）；② 直接重启宿主；
   ③ 需要时再按上面的"对照法"复测，先定性再动手。
+
+---
+
+## 7. 宿主切换/换版后的访问核查清单（2026-09-13 实测沉淀）
+
+> 触发场景：换 dsh 版本线、换端口、换访问 authority（loopback ↔ Tailscale 域名）、或改了 profile 插件集之后。
+> 目标：避免"服务端全好、浏览器白屏"这类假故障，也避免手机/Tailscale 侧漏配。
+
+按顺序核对（每步都有可判定量）：
+
+| # | 检查项 | 判定量 / 命令 | 常见故障与修法 |
+|---|---|---|---|
+| 1 | relay 是否随宿主起来 | `curl.exe -s http://127.0.0.1:<port>/dsh-web-relay/health-check` → `{"ok":true,…}` | 无响应/404 → 插件被注释或 boot 断言失败（见 `docs/COMPATIBILITY.md`） |
+| 2 | 宿主端口与 serve 指向是否一致 | `tailscale serve status` 应显示 `proxy http://127.0.0.1:<port>` | 不一致 → 手机侧连不上；`tailscale serve --bg --https=443 http://127.0.0.1:<port>` |
+| 3 | 非 loopback 访问是否带信任域名 | 宿主命令行需含 `--trusted-host <authority>` | 漏带 → 浏览器 `/api/*` 返回 **403**（注意 `/dsh-web-relay/*` 仍 200，不能用它判断"网络正常"） |
+| 4 | 首次链接的 token | `dsh web:` 打印的 `?token=`；watchdog 托管时在 `~/.dsh/logs/dsh-web-watchdog.log` | 换 authority 或清站点数据后，需重新用带 token 的链接打开一次（cookie 30 天、绑定 authority） |
+| 5 | **浏览器侧缓存** | 用隐私标签 / 清该站点数据后是否恢复 | SPA 外壳无 cache-control（harness `dsh-host-frontend-static` L73 只写 content-type）→ 换版后旧外壳引用失配 → **白屏**；详见 lesson `L-2026-0913-057` |
+| 6 | 静态资源可用性 | 带 cookie 取首页 200，且组合包 `/plugins/??…&rev=…` 200；ts.net 与本机取回字节数一致 | 只有 ts.net 失败 → serve/代理层；两边一致却仍白屏 → 回到第 5 项 |
+
+**排查顺序铁律**：先看「传输与鉴权」(1–4)，再看「缓存」(5)，最后才怀疑 harness/插件代码。
+2026-09-13 手机白屏实测即因跳过第 5 项，先在网络/端口上绕了一圈（`tx 17.9MB` 已证明包下完、serve 映射正确、trusted-host 已带，唯独漏了缓存）。
