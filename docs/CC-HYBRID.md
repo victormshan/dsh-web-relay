@@ -87,7 +87,10 @@ kind 支持（语义澄清，cc-understand-hybrid 复盘 2026-09-06 修订）：
   `reviewChannel=claude-code` 强制首选 cc；cc 失败自动续降 dialog。cc 降级成功标注 `providerLabel/reviewedBy=claude-code`、轨迹 reviewerLabel「Claude-Code (降级)」。
 - **alternatives 裁决管道**（lib/alternatives-compare.js + POST /steps/alternatives-review）：6 段模板逐方案打分择优 → `step.decision` + notes(action=decision) + 轨迹。
 - **batchStepIds 受控并发**：预检（串行）→ `mapLimit`（默认并发 2，env DSH_RELAY_BATCH_CONCURRENCY）并发取结论（不落盘）→ 串行 apply / 原子打回统一落盘——无 state 文件写盘竞态；callGemini 429/5xx 退避（1.5s/3s×2）。
-- 环境开关：`DSH_CC_REVIEW_ENABLED=0` 关闭 cc 通道；`DSH_CC_REVIEW_TIMEOUT_MS` 轮询上限（默认 150s）；`DSH_CC_TASKS_ROOT` 覆盖目录。
+- 环境开关：`DSH_CC_REVIEW_ENABLED=0` 关闭 cc 通道；`DSH_CC_TASKS_ROOT` 覆盖目录。
+- 轮询上限（可靠性加固，2026-09）：优先级 显式 timeoutMs（调用方传入）> `DSH_CC_REVIEW_TIMEOUT_MS`（env 覆盖，任意 kind 通吃）> 按 kind 默认档位（`lib/cc-channel.js` `DEFAULT_TIMEOUT_BY_KIND`：`review`=150000ms 不变；`implement`/`understand`=960000ms，对齐 runner.sh `timeout 900` 硬上限并留 60s 余量——此前三类 kind 共用硬编码 150000ms，导致本节所述"4-8 分钟固定开销"的任务在正常执行中即被 relay 误判超时降级）。
+- 超时语义可区分：`pollTaskResult` 超时返回 `reason='timeout-still-running'`（任务可能仍在执行，只是超出 relay 侧轮询上限，非任务失败），真失败返回 `reason='failed'`（`errorCode`/`errorText` 沿用 result.json 解析）；两者在 `lib/cc-stats.mjs` 的 `byFailure` 中分属不同分类，供 `/health-check` 审计区分。
+- 派发前 watchdog liveness 探针：`ccWatchdogAlive`（`lib/cc-channel.js`）在派发前校验 `queue/`、`tasks/` 结构存在且 `watchdog.log`（或 `cc-stats.json`）心跳新鲜（阈值 `DSH_CC_WATCHDOG_STALE_MS`，默认 120000ms）；不新鲜时直接降级并记 `fallbackReason` 含 `cc-watchdog-stale:<ageMs>`，不再白等整个轮询超时。
 - 注册表：registry.yaml 新增 protocol-v2-evolution 条目；cc-hybrid-claude-code 条目 verification 增 lib/cc-channel.js。
 
 ## 7. 默认化判定规则（2026-09-10 架构征询落地 P0-1）

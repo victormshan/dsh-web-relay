@@ -72,6 +72,29 @@ test('classifyCcFailure: 无法归类返回 unknown 且保留原文前 200 字',
   assert.equal(r.detail.length, 200);
 });
 
+// 缺陷 2/3 修复回归：新增失败分类必须排在通用 timeout 规则之前——两者都含
+// "timeout" 子串（\btimeout\b 会命中 "timeout-still-running"），若顺序错误会被
+// 笼统吞并进 timeout，导致"仍在执行（超时上限）"与"watchdog 陈旧降级"无法从统计上区分。
+
+test('classifyCcFailure: timeout-still-running 归类（cc-channel.js pollTaskResult 超时 reason），与真实 timeout 不同类', () => {
+  const r = classifyCcFailure('timeout-still-running');
+  assert.equal(r.category, 'timeout-still-running');
+  assert.notEqual(r.category, 'timeout');
+});
+
+test('classifyCcFailure: cc-watchdog-stale 归类（含动态 ageMs 后缀），与真实 timeout 不同类', () => {
+  const r = classifyCcFailure('cc-watchdog-stale:123456');
+  assert.equal(r.category, 'cc-watchdog-stale');
+  assert.notEqual(r.category, 'timeout');
+});
+
+test('classifyCcFailure: 真实 timeout（runner.sh exit=124/900s 硬超时）仍归类为 timeout，不受新规则影响', () => {
+  const r1 = classifyCcFailure('执行超时，900s 上限已到');
+  const r2 = classifyCcFailure('claude exit=124 超时');
+  assert.equal(r1.category, 'timeout');
+  assert.equal(r2.category, 'timeout');
+});
+
 // --- recordCcOutcome ---
 
 test('recordCcOutcome: 不可变更新，不修改入参 stats', () => {
@@ -109,6 +132,19 @@ test('recordCcOutcome: byFailure 按分类计数', () => {
   stats = recordCcOutcome(stats, { taskId: 't3', kind: 'implement', ok: false, elapsedMs: 10, reason: '产物缺失' });
   assert.equal(stats.byFailure.timeout, 2);
   assert.equal(stats.byFailure['artifact-missing'], 1);
+});
+
+test('recordCcOutcome: byFailure 区分 timeout-still-running / cc-watchdog-stale / 真实 timeout 三类（供 /health-check ccStats.byFailure 审计）', () => {
+  let stats = undefined;
+  stats = recordCcOutcome(stats, { taskId: 't1', kind: 'review', ok: false, elapsedMs: 150000, reason: 'timeout-still-running' });
+  stats = recordCcOutcome(stats, { taskId: 't2', kind: 'review', ok: false, elapsedMs: 0, reason: 'cc-watchdog-stale:200000' });
+  stats = recordCcOutcome(stats, { taskId: 't3', kind: 'implement', ok: false, elapsedMs: 900000, reason: 'claude exit=124 超时' });
+  assert.equal(stats.byFailure['timeout-still-running'], 1);
+  assert.equal(stats.byFailure['cc-watchdog-stale'], 1);
+  assert.equal(stats.byFailure.timeout, 1);
+  const s = summarizeCcStats(stats);
+  assert.equal(s.breakdown.byFailure['timeout-still-running'], 1);
+  assert.equal(s.breakdown.byFailure['cc-watchdog-stale'], 1);
 });
 
 test('recordCcOutcome: elapsedMs sum/min/max/count 正确', () => {
