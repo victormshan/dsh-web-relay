@@ -84,7 +84,7 @@ dsh plugin --profile web add dsh-web-relay
 
 | 版本 | 协议 | 内容 |
 |---|---|---|
-| 4.9.7 | v2.0 | **dsh 版本线兼容声明 + 新线适配**：`dsh.compat` 元数据（rc.7 原生 / 0.1.5+ 需 shim）、随包 `shim/dsh-apiproxy-shim`（apiProxy → sessionController.prompt 桥接）、`docs/COMPATIBILITY.md` 兼容矩阵与自检、`test/compat-metadata.test.js` 回归 |
+| 4.9.7 | v2.0 | **dsh 版本线兼容声明 + 新线适配**：`dsh.compat` 元数据（rc.7 原生 / 0.1.5+ 需 shim）、随包 `shim/dsh-apiproxy-shim`（apiProxy → sessionController.prompt 桥接）、`docs/COMPATIBILITY.md` 兼容矩阵与自检、`test/compat-metadata.test.js` 回归；**shim v0.2.0 修复**：直连服务须自补 typert gateway 的尾参 `signal`（修面板「唤醒主 Agent」报 `throwIfAborted`），含 `test/apiproxy-shim.test.js` 回归；watchdog `bridgeRestartTimes` 回归修复；lesson 057–059 |
 | 4.9.2 | v2.0 | 混合架构前端入口（claude-code 面板选项）、心跳双保险、无介入续跑实证、新环境可迁移（files/dist/INSTALL）、WSL/Linux 移植（platform-ops/install.sh）、能力对比与走查文档 |
 | 4.9.1 | v2.0 | tailClip 审核上下文修复、kill-host 工具化、skill §5 重启/续跑纪律、lessons 035/036/037 |
 | 4.9.0 | v2.0 | 协议演进四方向：claude-code 降级链 + alternatives 裁决 + 并发审核批（外部 AI 排位 C→A→B→D）|

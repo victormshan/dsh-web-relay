@@ -1,7 +1,7 @@
 {
   "name": "dsh-apiproxy-shim",
-  "version": "0.1.0",
-  "description": "Compatibility shim: re-provides the rc.7 `apiProxy` service on harness 0.1.5+ by bridging apiProxy.sessions.prompt({rpcId,payload}) onto the new host service sessionController.prompt({requestId,sessionId,mode,content}).",
+  "version": "0.2.0",
+  "description": "Compatibility shim: re-provides the rc.7 `apiProxy` service on harness 0.1.5+ by bridging apiProxy.sessions.prompt({rpcId,payload}) onto the new host service sessionController.prompt({requestId,sessionId,mode,content}). v0.2.0 appends the trailing AbortSignal that the typert gateway would normally inject (descriptor.cancellation), fixing \"Cannot read properties of undefined (reading 'throwIfAborted')\"; failures now carry prompt.length + stack diagnostics.",
   "private": true,
   "type": "module",
   "main": "lib/index.js",

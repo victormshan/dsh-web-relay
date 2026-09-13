@@ -1,4 +1,4 @@
-// dsh-apiproxy-shim 自测：不依赖 cordis，用 mock controller 验证信封契约。
+// dsh-apiproxy-shim 自测：不依赖 cordis，用 mock controller 验证信封契约与 signal 补参。
 // 运行：node test/selftest.mjs
 import assert from 'node:assert/strict'
 import { makeApiProxy } from '../lib/index.js'
@@ -36,7 +36,7 @@ const text = (t) => [{ type: 'text', text: t }]
   })
 }
 
-// 2. mode 缺省 / 非法值 → 归一化为 queue
+// 2. mode 缺省 / 非法值 → 归一化为 queue；steer 保留
 {
   await api.sessions.prompt({ rpcId: 'rpc-2', payload: { sessionId: 's1', content: text('x') } })
   assert.equal(calls.at(-1).mode, 'queue')
@@ -90,4 +90,39 @@ const text = (t) => [{ type: 'text', text: t }]
   assert.equal(resp.result.error.code, 'gateway/internal')
 }
 
-console.log(`dsh-apiproxy-shim selftest: 8/8 passed (controller calls: ${calls.length})`)
+// 9. v0.2.0：声明两参的 prompt（新线 gateway 契约）必须收到永不 abort 的 signal
+{
+  const seen = []
+  const twoArg = {
+    async prompt(request, signal) {
+      seen.push({ request, signal })
+      return { accepted: true }
+    }
+  }
+  const api2 = makeApiProxy(twoArg)
+  assert.equal(api2.__apiproxyShim.declaredArity, 2)
+  const resp = await api2.sessions.prompt({ rpcId: 'rpc-10', payload: { sessionId: 's1', content: text('x') } })
+  assert.equal(resp.result.ok, true)
+  assert.equal(seen.length, 1)
+  assert.equal(typeof seen[0].signal?.throwIfAborted, 'function')
+  assert.equal(seen[0].signal.aborted, false)
+}
+
+// 10. v0.2.0：失败信息带诊断（prompt.length + 栈帧）
+{
+  const failing = {
+    async prompt() {
+      throw new TypeError("Cannot read properties of undefined (reading 'throwIfAborted')")
+    }
+  }
+  const api3 = makeApiProxy(failing)
+  const resp = await api3.sessions.prompt({ rpcId: 'rpc-11', payload: { sessionId: 's1', content: text('x') } })
+  assert.equal(resp.result.ok, false)
+  assert.equal(resp.result.error.code, 'gateway/internal')
+  assert.match(resp.result.error.message, /shim: prompt\.length=\d/)
+  assert.match(resp.result.error.message, /throwIfAborted/)
+}
+
+console.log(
+  `dsh-apiproxy-shim selftest: 10/10 passed (controller calls: ${calls.length}; declaredArity=${api.__apiproxyShim.declaredArity})`
+)

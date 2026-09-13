@@ -2,7 +2,7 @@
   "meta": {
     "schemaVersion": "0.1",
     "title": "dsh-web-relay 主 agent 语境能力 lesson 库（机器可读）",
-    "updatedAt": "2026-09-13T12:53:43.880Z",
+    "updatedAt": "2026-09-13T16:23:14.079Z",
     "carrierOf": "docs/main-agent-lesson-schema-v0.1.md",
     "statusConvention": "proposed（主 agent 产出）→ approved / in-runbook（用户或外部 AI 确认，记 confirmedBy/confirmedAt）；in-runbook=要点已并入 main-agent-runbook 正文；superseded=内容已并入他条（扩展值，机器消费时应跳过）",
     "confirmedAt": "2026-09-04T13:14:35.897Z",
@@ -914,6 +914,40 @@
         "L-2026-0911-049"
       ],
       "recordedAt": "2026-09-13T12:53:43.880Z"
+    },
+    {
+      "id": "L-2026-0914-058",
+      "title": "新线 typert Remote 方法的尾参 signal 由 gateway 补：绕过 gateway 直连服务（如 apiProxy 兼容层）必须自己补，否则 undefined.throwIfAborted() → TypeError",
+      "category": "tooling-trap",
+      "layer": "L2",
+      "trigger": "在 harness 0.1.5+（新线）上以 cordis 服务方式直连调用 TypertRemoteService 的 Remote 方法（自研 shim / 宿主内插件互调），或运行时出现 \"Cannot read properties of undefined (reading 'throwIfAborted')\"",
+      "decision": "① 调用前用 `fn.length` 判声明元数：尾参为 signal（length>=2）时必须显式传一个永不 abort 的 AbortSignal（`new AbortController().signal`），与 gateway 行为对齐（dsh-api-gateway lib/index.js L397 NEVER_ABORTED_SIGNAL + L746 args.push(request.signal ?? NEVER_ABORTED_SIGNAL)）；② 错误信封回填诊断（声明元数 + 栈帧前几行），因为这类失败是普通 TypeError、没有 .code，现场只能靠 message 定位；③ 单测补一条『两参 controller 必收 signal』用例（源码级接线断言 + 行为断言）。",
+      "rationale": "该报错看起来像框架缺陷，实为调用契约差异：typert gateway 按源码签名（descriptor.cancellation，即最后一个形参是否叫 signal）决定是否补参，而服务实现里的 `signal.throwIfAborted()` 是无条件执行的；绕过 gateway 直连就没有这层包装，signal 为 undefined 立即抛错。二者行为必须由调用方主动对齐。",
+      "evidence": "2026-09-13 面板「唤醒主 Agent」失败：`gateway/internal: Cannot read properties of undefined (reading 'throwIfAborted')`。根因：dsh-api-session-controller/lib/index.js L2920-2923（SessionController，即 sessionController 服务）`prompt(request, signal) { signal.throwIfAborted(); return this.commands.prompt(request); }`——注意 L736 的 `async prompt(request)` 是另一个内部类 SessionCommandController，易误读为单参。修复：shim/dsh-apiproxy-shim v0.2.0 自适应补参 + selftest 10/10 + test/apiproxy-shim.test.js；修复后 handoff 唤醒成功且携带【主 agent 装配】与 lesson Top-K。",
+      "confidence": "high",
+      "status": "proposed",
+      "suggested": "proposed",
+      "crossRef": [
+        "L-2026-0911-050"
+      ],
+      "recordedAt": "2026-09-14T00:30:00.000Z"
+    },
+    {
+      "id": "L-2026-0914-059",
+      "title": "收口状态以 steps.json 为权威：/steps/finalize 只回写 steps.json + 追加 trace，不更新记录 md 的 frontmatter status（人读 md 会误判未收口）",
+      "category": "repository-knowledge",
+      "layer": "L2",
+      "trigger": "收口后核对「任务记录状态」，或有人阅读 web-relay/experiments/dsh-web-relay-<stamp>.md 判断任务是否结束/是否需再次收口时",
+      "decision": "① 判断任务终态一律读 `expr-<stamp>.steps.json` 的 status/finalized/finalizedAt/finalSummary（面板同源，是唯一权威）；② 记录 md 的 frontmatter `status` 可能长期停在 pending（现状实现缺陷，不代表任务未收口），不得据此重复触发收口或判定故障；③ 主 agent 的收口动作 = 追加 `## [主 agent]` 三方轨迹条目（可经 POST /dsh-web-relay/trace 落盘），不擅自手改插件状态文件；④ 若要修，应作为插件能力待办（让 finalize 回写 record frontmatter），而不是手工同步两份状态。",
+      "rationale": "同一任务的状态有两份副本（steps.json 与 record md frontmatter），由不同代码路径维护：finalize 只覆盖 steps.json 并追加 trace。副本不同步会让人读 md 得出「未收口」的错误结论，从而重复收口或误报缺陷——这类『状态副本漂移』的排查成本远高于读取权威文件。",
+      "evidence": "2026-09-13/14 expr-2026-09-13_16-14-12：面板收口后 steps.json = status done / finalized true / finalizedAt 2026-09-13T16:21:39.411Z / finalSummary【dsh-web-relay 任务收口】，而 D:\\ws2\\web-relay\\experiments\\dsh-web-relay-2026-09-13_16-14-12.md 的 frontmatter 仍为 `status: pending`；finalize 处理器实现见 lib/index.js L3906-3954（仅 writeStepState + appendTrace + 可选 wake）。",
+      "confidence": "high",
+      "status": "proposed",
+      "suggested": "proposed",
+      "crossRef": [
+        "L-2026-0903-002"
+      ],
+      "recordedAt": "2026-09-14T00:30:00.000Z"
     }
   ]
 }

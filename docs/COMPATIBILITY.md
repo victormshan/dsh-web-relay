@@ -66,7 +66,7 @@ curl.exe -s "http://127.0.0.1:3080/dsh-web-relay/status?token=<TOKEN>"
 
 ## 5. 2026-09-13 实测记录（新线兼容版）
 
-环境：Windows 原生 dsh `0.1.5-rc.1`（`C:\nvm4w\nodejs` → nvm v26.7.0），profile `~/.dsh/profiles/web`，插件 `dsh-web-relay 4.9.2` 代码 + `dsh-apiproxy-shim 0.1.0` + `dsh-side-window 0.5.0`。
+环境：Windows 原生 dsh `0.1.5-rc.1`（`C:\nvm4w\nodejs` → nvm v26.7.0），profile `~/.dsh/profiles/web`，插件 `dsh-web-relay 4.9.x` 代码 + `dsh-apiproxy-shim 0.2.0` + `dsh-side-window 0.5.0`。
 
 | 观测点 | 结果 |
 |---|---|
@@ -75,6 +75,15 @@ curl.exe -s "http://127.0.0.1:3080/dsh-web-relay/status?token=<TOKEN>"
 | `/dsh-web-relay/status` | `{"ok":true,"version":"4.9.2","apiProxyAvailable":true,...}` |
 | `/dsh-web-relay/health-check` | `{"ok":true,"version":"4.9.2","resumed":{"checked":2,"resumed":0,"paused":0},...}` |
 | 副作用 | 激活期间业务 workspace（`D:\dsh relay test\web-relay`）零写入 |
+
+### 5.1 唤醒链路修复（shim v0.2.0，2026-09-13 实测）
+
+面板「唤醒主 Agent」曾报 `gateway/internal: Cannot read properties of undefined (reading 'throwIfAborted')`。
+
+- **根因**：新线 `SessionController.prompt(request, signal)`（`dsh-api-session-controller` L2920-2923）的**尾参 `signal` 由 typert gateway 注入**：`dsh-api-gateway` L397 `NEVER_ABORTED_SIGNAL` + L746 `args.push(request.signal ?? NEVER_ABORTED_SIGNAL)`——**仅当方法声明尾部形参为 `signal` 时**。shim 是**直连服务**，没有这层包装 → `undefined.throwIfAborted()` 抛 TypeError。
+- **修法**（shim v0.2.0）：按 `controller.prompt.length >= 2` 自适应补一个永不 abort 的 `AbortSignal`，与 gateway 行为对齐；失败信封另附诊断（声明元数 + 栈帧前几行），因为这类错误没有 `.code`，现场只能靠 message 定位。
+- **验证**：修复后 handoff 唤醒成功，注入内容包含【主 agent 装配】5 条能力文件清单 + lesson Top-K（实测 expr-2026-09-13_16-14-12，并据此完成 2/2 步收口）。
+- **回归**：`shim/dsh-apiproxy-shim/test/selftest.mjs`（10/10）+ `test/apiproxy-shim.test.js`（源码级接线 + 两参 signal 行为断言）。
 
 ## 6. 相关文档
 
