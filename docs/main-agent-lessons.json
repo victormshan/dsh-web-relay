@@ -2,7 +2,7 @@
   "meta": {
     "schemaVersion": "0.1",
     "title": "dsh-web-relay 主 agent 语境能力 lesson 库（机器可读）",
-    "updatedAt": "2026-09-13T17:43:00.106Z",
+    "updatedAt": "2026-09-13T17:52:31.398Z",
     "carrierOf": "docs/main-agent-lesson-schema-v0.1.md",
     "statusConvention": "proposed（主 agent 产出）→ approved / in-runbook（用户或外部 AI 确认，记 confirmedBy/confirmedAt）；in-runbook=要点已并入 main-agent-runbook 正文；superseded=内容已并入他条（扩展值，机器消费时应跳过）",
     "confirmedAt": "2026-09-04T13:14:35.897Z",
@@ -966,6 +966,42 @@
         "L-2026-0910-042"
       ],
       "recordedAt": "2026-09-14T01:45:00.000Z"
+    },
+    {
+      "id": "L-2026-0914-061",
+      "title": "PowerShell 转写 UTF-8 文本 → 双重编码污染权威状态文件（steps.json 出现 å¼ºå 乱码）；对策：文本/JSON 变换一律走 node + POST 前编码自检",
+      "category": "tooling-trap",
+      "layer": "L1",
+      "trigger": "需要把 UTF-8 文本（中文计划、Step List、配置）从一处搬到另一处，或构造要 POST 给 relay 的 JSON payload 时，尤其经过 PowerShell 的 Get-Content/Set-Content/Out-File/ConvertTo-Json 管道",
+      "decision": "① 所有含中文的文本与 JSON 变换一律用 node（fs.readFileSync(p,'utf8') → fs.writeFileSync(p, s, 'utf8')），不用 PowerShell 读写文件；② 构造 /steps/restructure 等 payload 后、POST 之前必须做编码自检：若字符串含 ≥2 个 Latin-1 高位字符且按 latin1 还原后 CJK 字符数变多，判定为双重编码并**拒绝提交**（已实现于 stage-deferred.mjs 的 [gate] 编码自检）；③ 已污染的数据可无损还原：Buffer.from(mojibake,'latin1').toString('utf8')，逐字段做「还原后 CJK 增多才采用」的保守替换；④ 修复后用真实文件字节自证（title 行十六进制应为 e5bcba…而非 c3a5c2bc…）。",
+      "rationale": "PowerShell 默认按 ANSI/Windows-1252 解码再以 UTF-8 写出，会把「UTF-8 字节」当成「Latin-1 字符」再编码一次，产生 å¼ºå 型乱码；它不会报错，且下游 JSON.parse 依然成功，因此损坏会静默穿透到权威状态文件。事后修复成本远高于事前一条断言——本次损坏的正是整条目标链所依赖的权威计划。",
+      "evidence": "2026-09-14 实测：全工作区 99 份 *.steps.json 中恰 1 份损坏，即权威计划 expr-2026-09-13_17-36-07.steps.json（mtime 17:40:56）——title 原始字节 c3a5c2bc c2ba…（双重编码），latin1→utf8 还原得「V1-1: 强化突破度硬门禁 (Breakthrough Gate)」；同批记录 md 正常（e7aa81e7a0b4e5baa6）。源头为我 17:37:11 用 PowerShell 转写的 _restructure-steps.json，经 _steps-merged.json → _restructure-payload2.json 写入。服务端无责：运行副本读取请求体为 Buffer.concat(chunks).toString('utf8')（lib/index.js L552）。修复后重发 restructure 返回 {\"ok\":true}，落盘 title 字节 e5bcbae58c96e7aa81e7a0b4e5baa6…，双重编码判定「否」。",
+      "confidence": "high",
+      "status": "proposed",
+      "suggested": "proposed",
+      "crossRef": [
+        "L-2026-0909-040",
+        "L-2026-0914-060"
+      ],
+      "recordedAt": "2026-09-14T01:55:00.000Z"
+    },
+    {
+      "id": "L-2026-0914-062",
+      "title": "Claude Code 配额耗尽被记成笼统 claude exit=1 —— 失败分类不可审计、且不含恢复时间；对策：quota-exhausted 分类 + resetsAt 解析 + 已知耗尽不盲等 + 延迟自愈派发",
+      "category": "tooling-trap",
+      "layer": "L2",
+      "trigger": "cc 任务派发后 1-3 分钟内就失败（exit=1、done.flag 缺失、仓库零改动），或需要在无人值守时段让 cc 通道自动恢复执行时",
+      "decision": "① 失败分类必须区分 quota-exhausted 与 code-failed：解析 claude.log/result.json 中的 `session limit`/`rate limit`/`quota`/`resets <时间>` 特征，并尽力解析 resetsAt（解析不出返回 null，不抛错）；② cc-stats 的 byFailure 单列 cc-quota-exhausted，使 /health-check 能直接看出「配额耗尽 N 次」而非混在普通失败里；③ 已知配额耗尽且当前时间早于 resetsAt 时，派发前直接降级并记 reason=cc-quota-exhausted，不要盲等整个轮询超时（现已提升到 960s 档位）再失败；④ 无人值守恢复：把任务暂存到 D:\\cc-tasks\\deferred\\（不进 queue，避免 watchdog 立即取走必然失败），由 deferred-dispatch.ps1 周期探测通道（claude -p 探针），恢复后自动入队——本次以 Windows 计划任务 dsh-cc-deferred-hb2 在 05:05 启动。",
+      "rationale": "配额耗尽不是代码缺陷，但在此前的记录里与真实失败完全同形（都是 `claude exit=1; done.flag=missing`），主 agent 只能靠人读 claude.log 才能分辨——这恰好违反「失败分类与降级可审计」的目标要求。同时 960s 的轮询档位会把「已知不可用」放大成十几分钟白等，故需要前置判定与延迟派发，才能实现人工缺席下的自愈。",
+      "evidence": "2026-09-14 实测：ccfix-20260914-hb 于 17:48:08 dispatch，17:50:03 失败（约 115s），result.json={\"status\":\"failed\",\"exit\":1,\"reason\":\"claude exit=1; done.flag=missing\"}，claude.log 全文仅一行「You've hit your session limit · resets 5:10am (Asia/Shanghai)」，仓库 git status 零改动 → 判定为配额耗尽而非代码失败。据此改写规格（taskId=ccfix-20260914-hb2，新增修改 4「配额/限流耗尽必须可审计分类」）并暂存至 deferred；计划任务 dsh-cc-deferred-hb2 Next Run Time=2026/9/14 5:05:00、Status=Ready。",
+      "confidence": "high",
+      "status": "proposed",
+      "suggested": "proposed",
+      "crossRef": [
+        "L-2026-0914-061",
+        "L-2026-0911-051"
+      ],
+      "recordedAt": "2026-09-14T01:56:00.000Z"
     }
   ]
 }
