@@ -95,6 +95,61 @@ test('classifyCcFailure: 真实 timeout（runner.sh exit=124/900s 硬超时）�
   assert.equal(r2.category, 'timeout');
 });
 
+// ccfix-20260914-stats: 补齐 cc-quota-exhausted / cc-permission-denied / cc-timeout 三类
+// 归类——此前这三类 reason（含 lib/index.js runCcReviewTask 已经在写的字面量
+// 'cc-quota-exhausted' / 'cc-permission-denied'）一律落入 unknown 桶（见
+// docs/CC-HYBRID.md ccfix-20260914-hb3 遗留说明），/health-check 无法单列「配额耗尽 N 次」。
+
+test('classifyCcFailure: cc-quota-exhausted 归类（字面量 reason，index.js 已直传），不被 unknown/timeout 吞并', () => {
+  const r = classifyCcFailure('cc-quota-exhausted');
+  assert.equal(r.category, 'cc-quota-exhausted');
+});
+
+test('classifyCcFailure: cc-quota-exhausted 归类（claude.log 关键词兜底：session limit / rate limit / quota）', () => {
+  const r1 = classifyCcFailure('Claude AI usage limit reached, session limit exceeded');
+  const r2 = classifyCcFailure('429 rate limit hit, please retry later');
+  const r3 = classifyCcFailure('账号 quota 已耗尽');
+  assert.equal(r1.category, 'cc-quota-exhausted');
+  assert.equal(r2.category, 'cc-quota-exhausted');
+  assert.equal(r3.category, 'cc-quota-exhausted');
+});
+
+test('classifyCcFailure: cc-permission-denied 归类（字面量 reason 与关键词兜底），不被 unknown 吞并', () => {
+  const r1 = classifyCcFailure('cc-permission-denied');
+  const r2 = classifyCcFailure("Claude requested permissions to write to foo.txt, but you haven't granted it yet");
+  const r3 = classifyCcFailure('operation not permitted');
+  assert.equal(r1.category, 'cc-permission-denied');
+  assert.equal(r2.category, 'cc-permission-denied');
+  assert.equal(r3.category, 'cc-permission-denied');
+});
+
+test('classifyCcFailure: cc-timeout（errorCode 直传路径文本）归类，且与通用 timeout / timeout-still-running 不同类', () => {
+  const r = classifyCcFailure('cc-timeout');
+  assert.equal(r.category, 'cc-timeout');
+  assert.notEqual(r.category, 'timeout');
+  assert.notEqual(r.category, 'timeout-still-running');
+});
+
+test('recordCcOutcome: 混合 reason 输入 → cc-quota-exhausted / cc-permission-denied / cc-timeout / timeout 各桶计数互斥且总数相等', () => {
+  let stats = undefined;
+  stats = recordCcOutcome(stats, { taskId: 't1', kind: 'review', ok: false, elapsedMs: 100, reason: 'cc-quota-exhausted' });
+  stats = recordCcOutcome(stats, { taskId: 't2', kind: 'review', ok: false, elapsedMs: 100, reason: 'session limit reached' });
+  stats = recordCcOutcome(stats, { taskId: 't3', kind: 'review', ok: false, elapsedMs: 100, reason: 'cc-permission-denied' });
+  stats = recordCcOutcome(stats, { taskId: 't4', kind: 'review', ok: false, elapsedMs: 100, reason: "haven't granted permissions to write" });
+  stats = recordCcOutcome(stats, { taskId: 't5', kind: 'implement', ok: false, elapsedMs: 100, reason: 'cc-timeout' });
+  stats = recordCcOutcome(stats, { taskId: 't6', kind: 'implement', ok: false, elapsedMs: 900000, reason: 'claude exit=124 超时' });
+  stats = recordCcOutcome(stats, { taskId: 't7', kind: 'review', ok: true, elapsedMs: 50 });
+
+  assert.equal(stats.byFailure['cc-quota-exhausted'], 2);
+  assert.equal(stats.byFailure['cc-permission-denied'], 2);
+  assert.equal(stats.byFailure['cc-timeout'], 1);
+  assert.equal(stats.byFailure.timeout, 1);
+  assert.equal(stats.failed, 6);
+
+  const failureBucketSum = Object.values(stats.byFailure).reduce((a, b) => a + b, 0);
+  assert.equal(failureBucketSum, stats.failed, 'byFailure 各桶互斥可数：求和应等于 failed 总数');
+});
+
 // --- recordCcOutcome ---
 
 test('recordCcOutcome: 不可变更新，不修改入参 stats', () => {

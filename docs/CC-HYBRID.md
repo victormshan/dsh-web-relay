@@ -183,3 +183,5 @@ curl -X POST http://127.0.0.1:3080/dsh-web-relay/route/decide -H 'content-type: 
 
 ### 10.4 已知残余范围限制（未做项，非遗漏）
 本任务（ccfix-20260914-hb3）写入范围严格限定为 `lib/cc-channel.js`/`lib/index.js`/`test/cc-channel.test.js`/`docs/CC-HYBRID.md`/`cc-watchdog.sh.new`。任务提示词第 4 部分曾要求同时在 `lib/cc-stats.mjs` 的 `FAILURE_RULES` 新增 `cc-quota-exhausted` 分类（供 `/health-check` 的 `ccStats.byFailure` 单列配额耗尽次数）并在 `test/cc-stats.test.mjs` 补测试，但 `lib/cc-stats.mjs`/`test/cc-stats.test.mjs` 均不在写入范围清单内，与"写入范围外零改动"的硬性验收直接冲突。**本次判断优先遵守写入范围硬约束**：`recordCcStat` 记录的 `reason='cc-quota-exhausted'` 目前会被 `lib/cc-stats.mjs` 现有规则归入 `unknown` 桶，尚不能在 `byFailure` 中单列。后续若要补齐，需要一个显式扩大写入范围到 `lib/cc-stats.mjs` + `test/cc-stats.test.mjs` 的后续任务。
+
+**已在后续任务 ccfix-20260914-stats 补齐**：`lib/cc-stats.mjs` 的 `FAILURE_RULES` 新增 `cc-quota-exhausted`/`cc-permission-denied`/`cc-timeout` 三个分类桶（排在通用 `timeout` 规则之前，命名与 §10.3 `classifyCcFailure` 消费的 `result.json.errorCode` 取值一致），`byFailure` 现可单列「配额耗尽 N 次」「权限被拒 N 次」供 `/health-check` 直接查看。
