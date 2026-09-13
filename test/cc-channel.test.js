@@ -21,6 +21,9 @@ import {
   DEFAULT_TIMEOUT_BY_KIND,
   resolveTimeoutMs,
   WATCHDOG_STALE_MS_DEFAULT,
+  parseResetsAt,
+  classifyCcFailure,
+  shouldSkipForKnownQuotaExhaustion,
 } from '../lib/cc-channel.js';
 
 /**
@@ -375,9 +378,17 @@ test('ccChannelAvailable：ENOENT → false', async () => {
   assert.equal(ok, false);
 });
 
-// --- ccWatchdogAlive（缺陷 3：派发前 watchdog liveness 探针） ---
+// --- ccWatchdogAlive（ccfix-hb3：心跳陈旧默认 fail-open，不再阻塞派发） ---
+//
+// 以下两个用例的断言已按新语义修正（原断言基于"心跳陈旧→阻塞"的旧语义，是本次修复的
+// 直接对象）：
+//   - 'ccWatchdogAlive：心跳陈旧（超过默认阈值 120000ms）→ ok:false reason=cc-watchdog-stale:<ageMs>'
+//     → 改名为 '...默认（非严格）→ ok:true stale:true reason=alive-unverified:<ageMs>（fail-open）'
+//   - 'ccWatchdogAlive：env DSH_CC_WATCHDOG_STALE_MS 覆盖阈值——新鲜度足够但仍超过更严格的自定义阈值'
+//     → 断言从 ok:false 改为 ok:true stale:true（自定义阈值只影响"是否判陈旧"，不改变
+//       非严格模式下陈旧不阻塞的规则）
 
-test('ccWatchdogAlive：root/queue/tasks 齐全且心跳新鲜 → ok:true，details 齐全', async () => {
+test('ccWatchdogAlive：root/queue/tasks 齐全且心跳新鲜（专用心跳文件）→ ok:true stale:false reason=alive，details 含 heartbeatFile', async () => {
   const now = 1_000_000_000;
   const root = 'D:\\cc-tasks';
   const fake = createFakeFs(
@@ -388,19 +399,47 @@ test('ccWatchdogAlive：root/queue/tasks 齐全且心跳新鲜 → ok:true，det
         [path.join(root, 'tasks')]: ['rev-1', 'rev-2'],
       },
       stats: {
-        [path.join(root, 'watchdog.log')]: now - 5000,
+        [path.join(root, 'watchdog.heartbeat')]: now - 5000,
+        [path.join(root, 'watchdog.log')]: now - 999999, // 陈旧也无妨——优先命中专用心跳文件
       },
     }
   );
 
   const res = await ccWatchdogAlive({ fsImpl: fake, root, now });
   assert.equal(res.ok, true);
+  assert.equal(res.stale, false);
+  assert.equal(res.reason, 'alive');
   assert.equal(res.details.logAgeMs, 5000);
   assert.equal(res.details.queueDepth, 1);
   assert.equal(res.details.tasksCount, 2);
+  assert.equal(res.details.heartbeatFile, 'watchdog.heartbeat');
 });
 
-test('ccWatchdogAlive：心跳陈旧（超过默认阈值 120000ms）→ ok:false reason=cc-watchdog-stale:<ageMs>', async () => {
+test('ccWatchdogAlive：专用心跳文件缺失但 watchdog.log 新鲜 → 回退链正确，仍判新鲜', async () => {
+  const now = 1_000_000_000;
+  const root = 'D:\\cc-tasks';
+  const fake = createFakeFs(
+    { [`${root}\\marker`]: 'x' },
+    {
+      dirs: {
+        [path.join(root, 'queue')]: [],
+        [path.join(root, 'tasks')]: [],
+      },
+      stats: {
+        // 注意：没有 watchdog.heartbeat，只有 watchdog.log
+        [path.join(root, 'watchdog.log')]: now - 3000,
+      },
+    }
+  );
+
+  const res = await ccWatchdogAlive({ fsImpl: fake, root, now });
+  assert.equal(res.ok, true);
+  assert.equal(res.stale, false);
+  assert.equal(res.reason, 'alive');
+  assert.equal(res.details.heartbeatFile, 'watchdog.log');
+});
+
+test('ccWatchdogAlive：心跳陈旧（超过默认阈值 120000ms）默认（非严格）→ ok:true stale:true reason=alive-unverified:<ageMs>（fail-open，本次修复核心断言）', async () => {
   const now = 1_000_000_000;
   const root = 'D:\\cc-tasks';
   const fake = createFakeFs(
@@ -417,13 +456,52 @@ test('ccWatchdogAlive：心跳陈旧（超过默认阈值 120000ms）→ ok:fals
   );
 
   const res = await ccWatchdogAlive({ fsImpl: fake, root, now });
-  assert.equal(res.ok, false);
-  assert.equal(res.reason, 'cc-watchdog-stale:200000');
+  assert.equal(res.ok, true);
+  assert.equal(res.stale, true);
+  assert.match(res.reason, /^alive-unverified:/);
+  assert.equal(res.reason, 'alive-unverified:200000');
   assert.equal(res.details.logAgeMs, 200000);
   assert.equal(WATCHDOG_STALE_MS_DEFAULT, 120000);
 });
 
-test('ccWatchdogAlive：env DSH_CC_WATCHDOG_STALE_MS 覆盖阈值——新鲜度足够但仍超过更严格的自定义阈值', async () => {
+test('ccWatchdogAlive：心跳陈旧 + DSH_CC_WATCHDOG_STRICT=1 → ok:false stale:true reason=cc-watchdog-stale:<ageMs>（严格模式才阻塞）', async () => {
+  const now = 1_000_000_000;
+  const root = 'D:\\cc-tasks';
+  const fake = createFakeFs(
+    { [`${root}\\marker`]: 'x' },
+    {
+      dirs: {
+        [path.join(root, 'queue')]: [],
+        [path.join(root, 'tasks')]: [],
+      },
+      stats: {
+        [path.join(root, 'watchdog.log')]: now - 200000,
+      },
+    }
+  );
+
+  const res = await ccWatchdogAlive({ fsImpl: fake, root, env: { DSH_CC_WATCHDOG_STRICT: '1' }, now });
+  assert.equal(res.ok, false);
+  assert.equal(res.stale, true);
+  assert.match(res.reason, /^cc-watchdog-stale:/);
+  assert.equal(res.reason, 'cc-watchdog-stale:200000');
+});
+
+test('ccWatchdogAlive：心跳文件完全缺失（无 heartbeat 也无 log）默认（非严格）→ ok:true stale:true reason=alive-unverified:missing', async () => {
+  const root = 'D:\\cc-tasks';
+  const fake = createFakeFs(
+    { [`${root}\\marker`]: 'x' },
+    { dirs: { [path.join(root, 'queue')]: [], [path.join(root, 'tasks')]: [] } }
+  );
+
+  const res = await ccWatchdogAlive({ fsImpl: fake, root });
+  assert.equal(res.ok, true);
+  assert.equal(res.stale, true);
+  assert.equal(res.reason, 'alive-unverified:missing');
+  assert.equal(res.details.heartbeatFile, null);
+});
+
+test('ccWatchdogAlive：env DSH_CC_WATCHDOG_STALE_MS 覆盖阈值——新鲜度足够但仍超过更严格的自定义阈值（非严格模式下仍 fail-open）', async () => {
   const now = 1_000_000_000;
   const root = 'D:\\cc-tasks';
   const fake = createFakeFs(
@@ -445,23 +523,107 @@ test('ccWatchdogAlive：env DSH_CC_WATCHDOG_STALE_MS 覆盖阈值——新鲜度
     env: { DSH_CC_WATCHDOG_STALE_MS: '1000' }, // 自定义更严格阈值
     now,
   });
-  assert.equal(res.ok, false);
-  assert.equal(res.reason, 'cc-watchdog-stale:5000');
+  assert.equal(res.ok, true);
+  assert.equal(res.stale, true);
+  assert.equal(res.reason, 'alive-unverified:5000');
 });
 
-test('ccWatchdogAlive：queue 目录缺失 → ok:false reason=queue-dir-missing（不读心跳、不白等）', async () => {
+test('ccWatchdogAlive：queue 目录缺失 → ok:false reason=queue-dir-missing（结构性问题仍阻塞，不读心跳、不白等）', async () => {
   const root = 'D:\\cc-tasks';
   const fake = createFakeFs({ [`${root}\\marker`]: 'x' });
   const res = await ccWatchdogAlive({ fsImpl: fake, root });
   assert.equal(res.ok, false);
+  assert.equal(res.stale, false);
   assert.equal(res.reason, 'queue-dir-missing');
 });
 
-test('ccWatchdogAlive：root 不可访问 → ok:false reason=root-unavailable', async () => {
+test('ccWatchdogAlive：root 不可访问 → ok:false reason=root-unavailable（结构性问题仍阻塞）', async () => {
   const fake = createFakeFs();
   const res = await ccWatchdogAlive({ fsImpl: fake, root: 'D:\\not-exist' });
   assert.equal(res.ok, false);
+  assert.equal(res.stale, false);
   assert.equal(res.reason, 'root-unavailable');
+});
+
+// --- parseResetsAt / classifyCcFailure / shouldSkipForKnownQuotaExhaustion（配额/权限可审计分类） ---
+
+test('parseResetsAt：从 "resets 5:10am (Asia/Shanghai)" 尽力解析出未来时间点', () => {
+  // 2026-09-14 06:00 UTC+8（早于 5:10am）——目标时刻应顺延到当天 5:10（还未到）或次日
+  const now = Date.UTC(2026, 8, 13, 22, 0, 0); // 2026-09-14 06:00 +08:00
+  const iso = parseResetsAt('You\'ve hit your session limit · resets 5:10am (Asia/Shanghai)', { now });
+  assert.equal(typeof iso, 'string');
+  assert.ok(!Number.isNaN(Date.parse(iso)));
+  assert.ok(Date.parse(iso) > now, '解析出的 resetsAt 必须晚于 now');
+});
+
+test('parseResetsAt：无法识别的文本 → null，不抛错', () => {
+  assert.equal(parseResetsAt('claude exit=1; done.flag=missing'), null);
+  assert.equal(parseResetsAt(''), null);
+  assert.equal(parseResetsAt(undefined), null);
+});
+
+test('classifyCcFailure：session limit 文本 → kind=quota-exhausted 且解析出 resetsAt', () => {
+  const now = Date.UTC(2026, 8, 13, 22, 0, 0);
+  const r = classifyCcFailure({
+    result: { status: 'failed', exit: 1, errorCode: 'cc-quota-exhausted', reason: 'claude exit=1; done.flag=missing' },
+    claudeLogText: "You've hit your session limit · resets 5:10am (Asia/Shanghai)",
+    now,
+  });
+  assert.equal(r.kind, 'quota-exhausted');
+  assert.equal(r.errorCode, 'cc-quota-exhausted');
+  assert.ok(typeof r.resetsAt === 'string' && Date.parse(r.resetsAt) > now);
+});
+
+test('classifyCcFailure：errorCode=cc-permission-denied（Edit 工具未授权被拒）→ kind=permission-denied', () => {
+  const r = classifyCcFailure({
+    result: { status: 'failed', exit: 1, errorCode: 'cc-permission-denied', reason: 'claude exit=1; done.flag=missing' },
+    claudeLogText: "I don't have permissions to write to that file; I haven't granted Edit access.",
+  });
+  assert.equal(r.kind, 'permission-denied');
+  assert.equal(r.errorCode, 'cc-permission-denied');
+  assert.equal(r.resetsAt, null);
+});
+
+test('classifyCcFailure：普通退出码/无特征日志 → kind=code-failed（与配额/权限/超时可区分）', () => {
+  const r = classifyCcFailure({
+    result: { status: 'failed', exit: 1, errorCode: 'cc-failed', reason: 'claude exit=1; done.flag=missing' },
+    claudeLogText: 'TypeError: cannot read property of undefined\n  at foo.js:12',
+  });
+  assert.equal(r.kind, 'code-failed');
+  assert.equal(r.errorCode, 'cc-failed');
+  assert.equal(r.resetsAt, null);
+});
+
+test('classifyCcFailure：errorCode=cc-timeout → kind=timeout', () => {
+  const r = classifyCcFailure({ result: { status: 'failed', exit: 124, errorCode: 'cc-timeout' }, claudeLogText: '' });
+  assert.equal(r.kind, 'timeout');
+});
+
+test('classifyCcFailure：result/claudeLogText 均缺失 → kind=unknown，不抛错', () => {
+  const r = classifyCcFailure({});
+  assert.equal(r.kind, 'unknown');
+  assert.equal(r.errorCode, null);
+  assert.equal(r.resetsAt, null);
+});
+
+test('shouldSkipForKnownQuotaExhaustion：已知配额耗尽且 now < resetsAt → true（应跳过派发）', () => {
+  const now = 1_000_000_000;
+  const skip = shouldSkipForKnownQuotaExhaustion({
+    quotaState: { kind: 'quota-exhausted', resetsAt: new Date(now + 60000).toISOString() },
+    now,
+  });
+  assert.equal(skip, true);
+});
+
+test('shouldSkipForKnownQuotaExhaustion：resetsAt 已过 / 状态缺失 / 非配额类别 → false（不误伤派发）', () => {
+  const now = 1_000_000_000;
+  assert.equal(
+    shouldSkipForKnownQuotaExhaustion({ quotaState: { kind: 'quota-exhausted', resetsAt: new Date(now - 1000).toISOString() }, now }),
+    false
+  );
+  assert.equal(shouldSkipForKnownQuotaExhaustion({ quotaState: null, now }), false);
+  assert.equal(shouldSkipForKnownQuotaExhaustion({ quotaState: { kind: 'code-failed', resetsAt: new Date(now + 60000).toISOString() }, now }), false);
+  assert.equal(shouldSkipForKnownQuotaExhaustion({ quotaState: { kind: 'quota-exhausted', resetsAt: 'not-a-date' }, now }), false);
 });
 
 // --- nodeFsImpl 存在性检查（不实际调用真实 IO） ---

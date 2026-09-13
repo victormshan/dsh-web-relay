@@ -90,7 +90,7 @@ kind 支持（语义澄清，cc-understand-hybrid 复盘 2026-09-06 修订）：
 - 环境开关：`DSH_CC_REVIEW_ENABLED=0` 关闭 cc 通道；`DSH_CC_TASKS_ROOT` 覆盖目录。
 - 轮询上限（可靠性加固，2026-09）：优先级 显式 timeoutMs（调用方传入）> `DSH_CC_REVIEW_TIMEOUT_MS`（env 覆盖，任意 kind 通吃）> 按 kind 默认档位（`lib/cc-channel.js` `DEFAULT_TIMEOUT_BY_KIND`：`review`=150000ms 不变；`implement`/`understand`=960000ms，对齐 runner.sh `timeout 900` 硬上限并留 60s 余量——此前三类 kind 共用硬编码 150000ms，导致本节所述"4-8 分钟固定开销"的任务在正常执行中即被 relay 误判超时降级）。
 - 超时语义可区分：`pollTaskResult` 超时返回 `reason='timeout-still-running'`（任务可能仍在执行，只是超出 relay 侧轮询上限，非任务失败），真失败返回 `reason='failed'`（`errorCode`/`errorText` 沿用 result.json 解析）；两者在 `lib/cc-stats.mjs` 的 `byFailure` 中分属不同分类，供 `/health-check` 审计区分。
-- 派发前 watchdog liveness 探针：`ccWatchdogAlive`（`lib/cc-channel.js`）在派发前校验 `queue/`、`tasks/` 结构存在且 `watchdog.log`（或 `cc-stats.json`）心跳新鲜（阈值 `DSH_CC_WATCHDOG_STALE_MS`，默认 120000ms）；不新鲜时直接降级并记 `fallbackReason` 含 `cc-watchdog-stale:<ageMs>`，不再白等整个轮询超时。
+- 派发前 watchdog liveness 探针：`ccWatchdogAlive`（`lib/cc-channel.js`）在派发前校验 `queue/`、`tasks/` 结构是否完好；心跳新鲜度（阈值 `DSH_CC_WATCHDOG_STALE_MS`，默认 120000ms）**默认只告警不阻塞**（见 §10 fail-open 修复）。
 - 注册表：registry.yaml 新增 protocol-v2-evolution 条目；cc-hybrid-claude-code 条目 verification 增 lib/cc-channel.js。
 
 ## 7. 默认化判定规则（2026-09-10 架构征询落地 P0-1）
@@ -161,3 +161,25 @@ curl -X POST http://127.0.0.1:3080/dsh-web-relay/route/decide -H 'content-type: 
     并在 `test/cross-check.test.js` 加**源码级接线回归**（括号配对提取每个 `obtainReviewVerdict` / `reviewOneStep` 调用点，
     断言都传该开关且由 `payload.enableCrossCheck === true` 驱动）；反向验证：人为去掉第 7 参时该用例 FAIL（13 pass/1 fail）。
 - 通道不可用与结论冲突严格区分：次通道（cc）不可用时**采信主通道并标注"交叉校验未完成"**，避免把"通道故障"误升级为人工。
+
+## 10. watchdog 探针 fail-open 修复 + 配额耗尽可审计分类（ccfix-20260914-hb3）
+
+### 10.1 问题：心跳陈旧误判为不可用，整条 cc 通道被瞬间短路
+- `watchdog.log` 是**事件驱动**日志——cc-watchdog.sh 只在 startup/dispatch/REJECT 时 echo，轮询循环内长期无任务时不写日志；实测 watchdog 进程健康存活、12 分钟前刚成功派发任务，但 `watchdog.log` 的 mtime 已距今 762697ms（远超 120000ms 默认阈值）。
+- 上一版 `ccWatchdogAlive` 把心跳陈旧直接判 `ok:false`（`lib/index.js` 的 `runCcReviewTask` 派发前用该结果做阻塞门），结构完好却被判不可用 → **生产环境每一次 cc 审核派发都会被瞬间短路**，本插件三方协议最依赖的编码通道整体失效。
+- 失败方向选择：把"其实活着"误判为"死了" = 通道整体丢失（严重）；把"其实死了"误判为"活着" = 只是多等一次既有的轮询超时（可接受）。**故默认 fail-open**：只有结构性不可用（root/queue/tasks 目录缺失）才阻塞派发，心跳缺失/陈旧一律 `ok:true, stale:true` 告警放行；`DSH_CC_WATCHDOG_STRICT=1` 时才恢复为阻塞（供需要严格模式的场景/测试使用）。
+
+### 10.2 修复实现
+- `ccWatchdogAlive`（`lib/cc-channel.js`）：
+  - 心跳候选顺序改为 `watchdog.heartbeat`（专用心跳文件，优先）→ `watchdog.log`（事件驱动日志，回退）；**移除 `cc-stats.json`**——它只在成功派发后才更新（数分钟到数天量级粒度），拿它判断"轮询循环是否卡死"噪声太大。
+  - 返回结构扩展为 `{ ok, reason, stale, details:{ logAgeMs, queueDepth, tasksCount, heartbeatFile } }`；`ok` 的取值：结构缺失（root-unavailable/queue-dir-missing/tasks-dir-missing）恒 `ok:false`；结构完好时默认 `ok:true`（`stale` 标注是否陈旧/缺失），仅 `DSH_CC_WATCHDOG_STRICT==='1'` 时陈旧才 `ok:false`。
+- `lib/index.js` `runCcReviewTask`：派发前只在 `!watchdog.ok`（结构性失败）时短路；`watchdog.stale===true` 时 `console.warn` 打印 `[dsh-web-relay] cc 通道心跳告警: <reason>` 并继续派发，告警通过模块级 `lastCcWatchdogWarning` 挂到 `/health-check` 响应的 `ccWatchdogWarning` 字段（不计入失败，不影响成功率统计）。
+- `/mnt/d/cc-tasks/cc-watchdog.sh.new`（新建，未替换运行中的 `cc-watchdog.sh`）：以现有脚本为基础，仅在轮询循环内 `sleep 5` 之前新增一行 `touch /mnt/d/cc-tasks/watchdog.heartbeat`，使心跳按轮询节奏（含队列为空时）持续刷新；`diff -u cc-watchdog.sh cc-watchdog.sh.new` 只有该增量。**换入与重启由主 agent 受控执行**——心跳文件在换入前不存在，默认路径下会走"心跳缺失→`alive-unverified:missing` 告警但不阻塞"，这是刻意的 fail-open 设计，不是遗漏。
+
+### 10.3 配额/限流耗尽可审计分类
+- `classifyCcFailure({ result, claudeLogText, now })`（`lib/cc-channel.js`，纯函数）：优先消费 runner.sh 已产出的 `result.json.errorCode`（`cc-quota-exhausted`/`cc-permission-denied`/`cc-timeout`/`cc-failed`/`v2-validate-failed`），缺失时退化为对 `claude.log` 原文做关键词兜底识别（`session limit`/`rate limit`/`quota`/`permissions to write`/`haven't granted`，大小写不敏感）；返回 `{ kind, errorCode, resetsAt, raw }`。
+- `parseResetsAt(text, { now })`：从 `resets 5:10am (Asia/Shanghai)` 一类文本中用 `Intl.DateTimeFormat` 做时区无关的挂钟时刻→UTC 换算（不动点迭代，零第三方依赖），解析不出/时区非法返回 `null`，不抛错。
+- `shouldSkipForKnownQuotaExhaustion({ quotaState, now })`：纯函数，`quotaState.kind==='quota-exhausted' && now < resetsAt` 时返回 `true`。`lib/index.js` 在 `runCcReviewTask` 派发前读取运行时状态文件 `D:\cc-tasks\cc-quota-state.json`（类比既有 `cc-stats.json` 用法的运行时数据文件，非源码），命中即直接记 `reason='cc-quota-exhausted'` 并跳过派发，不再盲等整个轮询超时；真实失败发生时（`poll.status==='failed'`）用 `classifyCcFailure` 分类并在识别为配额耗尽时写回该状态文件。
+
+### 10.4 已知残余范围限制（未做项，非遗漏）
+本任务（ccfix-20260914-hb3）写入范围严格限定为 `lib/cc-channel.js`/`lib/index.js`/`test/cc-channel.test.js`/`docs/CC-HYBRID.md`/`cc-watchdog.sh.new`。任务提示词第 4 部分曾要求同时在 `lib/cc-stats.mjs` 的 `FAILURE_RULES` 新增 `cc-quota-exhausted` 分类（供 `/health-check` 的 `ccStats.byFailure` 单列配额耗尽次数）并在 `test/cc-stats.test.mjs` 补测试，但 `lib/cc-stats.mjs`/`test/cc-stats.test.mjs` 均不在写入范围清单内，与"写入范围外零改动"的硬性验收直接冲突。**本次判断优先遵守写入范围硬约束**：`recordCcStat` 记录的 `reason='cc-quota-exhausted'` 目前会被 `lib/cc-stats.mjs` 现有规则归入 `unknown` 桶，尚不能在 `byFailure` 中单列。后续若要补齐，需要一个显式扩大写入范围到 `lib/cc-stats.mjs` + `test/cc-stats.test.mjs` 的后续任务。
