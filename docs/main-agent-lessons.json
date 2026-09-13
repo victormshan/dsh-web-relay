@@ -2,7 +2,7 @@
   "meta": {
     "schemaVersion": "0.1",
     "title": "dsh-web-relay 主 agent 语境能力 lesson 库（机器可读）",
-    "updatedAt": "2026-09-13T17:52:31.398Z",
+    "updatedAt": "2026-09-13T23:42:49.172Z",
     "carrierOf": "docs/main-agent-lesson-schema-v0.1.md",
     "statusConvention": "proposed（主 agent 产出）→ approved / in-runbook（用户或外部 AI 确认，记 confirmedBy/confirmedAt）；in-runbook=要点已并入 main-agent-runbook 正文；superseded=内容已并入他条（扩展值，机器消费时应跳过）",
     "confirmedAt": "2026-09-04T13:14:35.897Z",
@@ -1002,6 +1002,24 @@
         "L-2026-0911-051"
       ],
       "recordedAt": "2026-09-14T01:56:00.000Z"
+    },
+    {
+      "id": "L-2026-0914-063",
+      "title": "result.json status=failed 不等于产物不合格——配额常在收尾阶段耗尽（写报告时），机械按 status 重派会白丢一个窗口；验收必须看产物 + 独立验收器",
+      "category": "judgment-heuristic",
+      "layer": "L2",
+      "trigger": "cc 任务 result.json 报 failed（尤其 errorCode=cc-quota-exhausted）但仓库已出现改动时；或在决定「按失败丢弃并重派」之前",
+      "decision": "① 不以 status 单点判断：先跑独立验收器（写入范围 / node --check / 全量测试 / 文件覆盖 / BOM+CRLF 五项）并读产物（out/report.md、done.flag）；② 若 status=failed 但 errorCode=cc-quota-exhausted、产物齐、测试全绿 → 按「交付有效、任务记录失败」签收：在 commit message 里如实写明原因，不掩盖也不重派（重派要再花一整个额度窗口）；③ 只有产物缺失、测试红或范围越界时才重派；④ 把 done.flag 缺失视为唯一缺口，并在后续契约里要求「先 touch done.flag 再写报告」，降低收尾阶段被额度打断的损失。",
+      "rationale": "订阅额度是随时可能中断的外部约束，而中断点往往落在任务末尾（生成报告/总结时）——此时代码与测试早已完成。若机械按 status 处理，会把一份已写完且全绿的实现丢掉再重做，代价是一个完整的额度窗口（本次约 2.7 小时）。status 描述的是「任务是否按契约完整闭环」，产物完好性描述的是「工作是否已发生」，两者必须分开判定。",
+      "evidence": "2026-09-14 ccfix-20260914-stats：result.json={\"status\":\"failed\",\"start\":\"23:37:04Z\",\"end\":\"23:42:09Z\",\"exit\":1,\"errorCode\":\"cc-quota-exhausted\",\"reason\":\"claude exit=1; done.flag=missing\"}，claude.log 全文仅一行「You've hit your session limit · resets 10:20am (Asia/Shanghai)」；但 lib/cc-stats.mjs 已新增 cc-quota-exhausted / cc-permission-denied / cc-timeout 三条规则（排在通用 timeout 之前）、test/cc-stats.test.mjs 新增 5 例、out/report.md 15683 B 已写完；独立验收器 verify-cc-task.mjs 判定 7/7 ACCEPT（全量 tests=458 pass=458 fail=0、*.test.js 子集 318/318、verify-files-coverage OK、无 BOM/无 CRLF、写入范围合规）。同批次 ccfix-20260914-hb3 则是真 done（exit=0 + done.flag），说明失败分类能区分两者。",
+      "confidence": "high",
+      "status": "proposed",
+      "suggested": "proposed",
+      "crossRef": [
+        "L-2026-0914-062",
+        "L-2026-0914-061"
+      ],
+      "recordedAt": "2026-09-14T07:50:00.000Z"
     }
   ]
 }
