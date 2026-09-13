@@ -2,7 +2,7 @@
   "meta": {
     "schemaVersion": "0.1",
     "title": "dsh-web-relay 主 agent 语境能力 lesson 库（机器可读）",
-    "updatedAt": "2026-09-13T16:23:14.079Z",
+    "updatedAt": "2026-09-13T17:43:00.106Z",
     "carrierOf": "docs/main-agent-lesson-schema-v0.1.md",
     "statusConvention": "proposed（主 agent 产出）→ approved / in-runbook（用户或外部 AI 确认，记 confirmedBy/confirmedAt）；in-runbook=要点已并入 main-agent-runbook 正文；superseded=内容已并入他条（扩展值，机器消费时应跳过）",
     "confirmedAt": "2026-09-04T13:14:35.897Z",
@@ -948,6 +948,24 @@
         "L-2026-0903-002"
       ],
       "recordedAt": "2026-09-14T00:30:00.000Z"
+    },
+    {
+      "id": "L-2026-0914-060",
+      "title": "外部 AI 看不到仓库现状 → 反复重造已上线功能/引用幻觉模块；对策：可行性审计前置 + 只合入新内容 + 把机器生成的能力清单随 /ask 注入",
+      "category": "collaboration-rhythm",
+      "layer": "L2",
+      "trigger": "用三方协议 /ask 做规划或重构时，方案出现「实现已存在的能力」或引用仓库中不存在的模块/命令（幻觉产物）；或准备把规划步骤直接派发给 Claude Code 执行前",
+      "decision": "① 派发前做**可行性审计**：逐条核对 artifacts 是否存在、关键能力是否已实现（给出行号/命中数取证），把差异表交回外部 AI 重规划（§2.3），**不擅自替换其 Step List**；② 合入时只取新内容——用 merge-step 只替换目标步、其余逐字保留，防其顺手改写依赖图/验收；③ 根因治理：在 /ask 的注入里附**机器生成的能力清单**（lib/* 模块 + registry 条目 + 路由表 + 测试清单），让规划方具备现状视野；④ 对「已上线功能」类步骤一律以实盘取证驳回，不派发执行。",
+      "rationale": "外部 AI 只能看到协议文本与任务描述，看不到仓库；它倾向按通用最佳实践「重建」，于是产出幻觉模块或重复实现现有能力。直接派发的代价是双向的：既浪费 cc 配额与 4-8 分钟/任务的执行窗口，又把冗余实现混进代码库（后续还要人工分辨与回退）。把「现状视野」前置注入规划环节，才是机制级解，而非事后逐条打回。",
+      "evidence": "2026-09-14 同一目标内三轮实测：① 首轮 5 处幻觉产物（lib/plan-engine.js、lib/reflection-engine.js、lib/swarm-review.js、scripts/sync-engine-docs.js、npm test —— 本仓库 package.json 无 scripts）；② 第二轮 V1-2 声称要「补齐 Swarm 默认双角色与共识矩阵」，实测 lib/swarm-prompts.js L6-60 已有 SWARM_ROLES/swarmConsensus/parseRoleReview、L80-85 swarmEnablePolicy 已实现 importance:high 默认开，lib/client.js L211 已有成本提示，lib/index.js L3695/L3770 已接线 → 已上线；③ 第三轮 aux 列表 7 步中 3 步重复已上线（claude-code 降级链、alternatives 6 段裁决、batchStepIds 受控并发：lib/index.js 命中 49/27 处，lib/alternatives-compare.js 存在）。",
+      "confidence": "high",
+      "status": "proposed",
+      "suggested": "proposed",
+      "crossRef": [
+        "L-2026-0911-049",
+        "L-2026-0910-042"
+      ],
+      "recordedAt": "2026-09-14T01:45:00.000Z"
     }
   ]
 }
