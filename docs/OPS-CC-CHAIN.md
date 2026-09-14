@@ -68,6 +68,9 @@ node "D:\dsh relay test\cc-chain.mjs" "cc-chains/v1-v3.mjs" --close-after-accept
 - **状态写入顺序（踩过的坑）**：链条必须**先写 `accepted-awaiting-review` 再调用收口器**——收口器的前置守卫会读 chain-state
   判断「该步是否已落地」，若先收口后写状态，守卫读不到 accepted 记录会直接拒绝收口（exit 3）。
 - 通过后 chain 状态为 `approved-and-closed`，并记录 `closure.reviewedBy` 供审计。
+- **断点续跑清理逻辑可离线自测**（无需额度）：`node "D:\dsh relay test\cc-chain.mjs" --selftest-clear`
+  验证两条语义——① 上次已结算（有 `result.json`）→ 归档到 `tasks/_retry-archive/` 并移除该目录（返回 true）；
+  ② 上次仍在运行（无 `result.json`）→ **不得清理**（返回 false，继续等待）。2026-09-15 01:56 实测 PASS，无残留。
 
 ### 3.2 两道防假闭环守卫（2026-09-15 加入，均有回归验证）
 
