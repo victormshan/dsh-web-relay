@@ -71,6 +71,13 @@ node "D:\dsh relay test\cc-chain.mjs" "cc-chains/v1-v3.mjs" --close-after-accept
 - **断点续跑清理逻辑可离线自测**（无需额度）：`node "D:\dsh relay test\cc-chain.mjs" --selftest-clear`
   验证两条语义——① 上次已结算（有 `result.json`）→ 归档到 `tasks/_retry-archive/` 并移除该目录（返回 true）；
   ② 上次仍在运行（无 `result.json`）→ **不得清理**（返回 false，继续等待）。2026-09-15 01:56 实测 PASS，无残留。
+- **协议门（`requiresApproved`）**：链条项可声明「推进前必须先 approved 的计划步骤」。当前 `V2-1` 声明 `requiresApproved: ['3']`
+  （计划第 3 步＝V1 版间门，主 agent 步，`step 4 depends_on [3]`）——链条**不代做版间门**，但必须**等它 approved** 才派发 V2，
+  否则等于绕过本计划核心的门禁设计。未过门时写 `awaiting-gate` 并暂停（exit 3），日志给出缺哪些步骤；
+  门检查放在**额度探针之前**，避免为注定不能推进的项浪费探针与派发。自测：`node cc-chain.mjs --selftest-gate`（PASS，实测 `3:pending → 门 CLOSED`）。
+- **崩溃兜底清锁**：脚本在流程早期取锁，若中途异常退出而未清锁，后续运行会被「已有运行中的链条」挡住**最长 30 分钟**
+  （2026-09-15 实际踩到：一次自测崩溃遗留 `chain.lock`）。已注册 `uncaughtException`/`unhandledRejection` 兜底清锁——
+  实测（故意 import 不存在的 chain 文件）：打印 `[fatal]` 且 **`chain.lock` 无残留**。
 - **已知额度耗尽短路（链条侧，与插件侧同源）**：撞额度后从 `claude.log` 解析恢复时间（`resets 3:20am` 一类）
   存入 `chain-state.quotaResetsAt`，后续轮次直接短路到该时刻——不再盲探/盲派。
   动机是实测：探针与真实任务的额度判定可能不一致（2026-09-15 02:00 探针 OK 而真实任务 4 秒后 `cc-quota-exhausted`，白耗一次派发）。
