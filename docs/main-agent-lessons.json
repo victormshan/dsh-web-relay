@@ -2,7 +2,7 @@
   "meta": {
     "schemaVersion": "0.1",
     "title": "dsh-web-relay 主 agent 语境能力 lesson 库（机器可读）",
-    "updatedAt": "2026-09-14T16:26:46.622Z",
+    "updatedAt": "2026-09-14T16:34:35.647Z",
     "carrierOf": "docs/main-agent-lesson-schema-v0.1.md",
     "statusConvention": "proposed（主 agent 产出）→ approved / in-runbook（用户或外部 AI 确认，记 confirmedBy/confirmedAt）；in-runbook=要点已并入 main-agent-runbook 正文；superseded=内容已并入他条（扩展值，机器消费时应跳过）",
     "confirmedAt": "2026-09-04T13:14:35.897Z",
@@ -1056,6 +1056,24 @@
         "L-2026-0914-064"
       ],
       "recordedAt": "2026-09-15T00:30:00.000Z"
+    },
+    {
+      "id": "L-2026-0915-066",
+      "title": "规格文件里的 prompt 模板字面量极易写坏（未转义反引号 / 嵌套 ${}）——本会话踩 4 次；对策：写规格后先跑语法+模板扫描，且校验器自身必须用已知good样本自检",
+      "category": "tooling-trap",
+      "layer": "L1",
+      "trigger": "编写/修改 cc 任务规格（cc-specs/*.mjs）或任何含大段中文 prompt 的模板字面量时；以及新写一个「校验/扫描」脚本准备据此修改既有文件之前",
+      "decision": "① 规格里的长 prompt 一律放在模板字面量中，**内容里不要出现裸反引号**（要显示代码/字段名就用「」或普通引号，或写成 \\` 转义）；② 绝不在模板里写 `${...}` 作为示例（会被当表达式求值；实测 `fs.resolve(`${EXPERIMENTS_DIR}/...`)` 直接导致规格 import 崩）；③ 写完立刻跑两道检查：`node --check <spec>` + 模板扫描（只计**未转义**的反引号/`${`）；④ 派发/链条入口已内置 `node --check` 前置门（cc-dispatch.mjs 与 cc-chain.mjs），给出可读诊断而不是堆栈；⑤ **校验器必须先自检**：新写的扫描器/判据要拿已知-good 文件验证（本次扫描器把合法的转义反引号 \\` 计成裸反引号，对 3 份可用规格误报「需修」，若照办会破坏它们）。",
+      "rationale": "模板字面量把「文本」与「代码」混在同一层：一个反引号就终止模板，一个 ${ 就触发求值，而症状是 import 期的语法/运行错误，与「文本写错」的直觉无关，因此极易反复踩。更危险的是反向情形——一个误报的校验器会驱动人去「修」本来正确的文件。两侧都靠同一原则防住：改前先能机械判定，判定器本身先在已知-good 样本上验证。",
+      "evidence": "2026-09-14/15 实测四次同类崩因：① v1-1.mjs 插入「声明可达性」段落时用了裸反引号 → SyntaxError: Unexpected identifier 'breakthrough_type'；② v3-1.mjs 在「--json 时输出机器可读 JSON」处用了 `--json` → SyntaxError；③ v2-1.mjs 第一轮插入含裸反引号的字段说明；④ v2-1.mjs 第二轮插入 `fs.resolve(`${EXPERIMENTS_DIR}/...`)`（裸反引号 + 嵌套 ${}）→ 同样崩。另有反向事故：新写的 scan-spec-templates.mjs 首版按原始文本统计反引号，对 v1-2.mjs(42)/v1-0-fix-heartbeat.mjs(124)/fix-cc-stats.mjs(26) 误报，而这三份当时均能 `node --check` 通过（其反引号为 \\` 转义、在模板中合法）；修正为只计未转义后报 0 问题，并交叉验证 7 份规格全部可 import（prompt 长度 2428–6156）。防线：cc-dispatch.mjs 与 cc-chain.mjs 已加 `node --check` 前置门（坏规格报 spec-broken 并不占用额度窗口）。",
+      "confidence": "high",
+      "status": "proposed",
+      "suggested": "proposed",
+      "crossRef": [
+        "L-2026-0914-061",
+        "L-2026-0915-065"
+      ],
+      "recordedAt": "2026-09-15T00:40:00.000Z"
     }
   ]
 }
