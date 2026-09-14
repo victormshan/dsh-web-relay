@@ -120,7 +120,26 @@ wsl.exe -e bash /mnt/d/cc-tasks/restart-test.sh
 - **链条不覆盖**：协议审核/approve、版间门评估、`finalAcceptance` 声明、三版端到端终验——这些必须由主 agent 执行。
 - **审计盲点**：机械验收只证明「范围/语法/测试/覆盖/编码」，不证明「实现是否符合意图」；意图层仍需审核环节。
 
-## 7. 相关实证
+## 7. 宿主重启（让插件 lib/ 新代码在运行中生效）
+
+链条走 WSL watchdog，**不依赖宿主**；重启期间链条第 N 次调度会因锁或额度探针自然跳过，不会误判为失败。
+但 relay 侧的新行为（如 `/health-check` 的 `ccWatchdogWarning`、突破度门禁、`/ask` 审计注入）只有重启后才生效。
+
+```powershell
+# 1) 三副本同步（改动文件逐个哈希比对；docs/lib/package.json 均需同步）
+#    目标：profiles\web\node_modules\dsh-web-relay、D:\DSH\dsh-web-relay、D:\dsh-web-relay-standalone
+
+# 2) 请求重启（只写请求文件后立即返回——由独立进程树的 watchdog 执行，避免工具进程自杀）
+node "D:\dsh-web-relay\bin\watchdog.mjs" request-restart 5
+
+# 3) 重启后核验
+#    GET http://127.0.0.1:3080/dsh-web-relay/health-check → bootId 变化；应出现新增审计字段；version 仍为 4.9.7
+```
+
+- 面板白屏≠故障：先清该站点数据再判断（lesson L-2026-0913-057）。
+- 失败回滚：查 `bin/` 下的 watchdog 日志；必要时手工重启宿主，插件代码在磁盘上已是新版，不影响回滚到旧提交（`git revert`）。
+
+## 8. 相关实证
 
 - 探针 fail-open + 专用心跳：提交 `1113494`（真实目录实测 `{ok:true,reason:alive,stale:false}`）
 - 自愈：`kill -9` 后 `NRestarts=1`、心跳续跑（`restart-test.sh`）
