@@ -32,13 +32,35 @@
 
 ## 3. 三条硬性不变量
 
-1. **不代批**：链条不调 `/steps/update`、不写 approve。`importance=high` 且 `review:true` 的步骤禁止自审自批；
-   必须走外部/降级链审核，并在 trace 留痕。
+1. **不代批**：链条自身不写 approve；启用 `--close-after-accept` 时，收口走 `/steps/auto-review` 的**独立审核通道**取裁决，
+   并受 `--min-reviewer` 强度门约束（弱通道可用时停止等人）。`importance=high` 且 `review:true` 的步骤永远不由实施方自批。
 2. **提交是暂定的**：每项通过机械验收后提交一次（保持工作树干净，否则下一个任务的 `git status` 范围自检会被上一任务残留污染）。
    若协议审核打回，走 `/steps/rollback` 回到该步基线。
 3. **幂等可重入**：重复触发安全（锁 + 断点 + 已完成守卫）；任一环节崩溃都不丢进度。
 
-### 3.1 两道防假闭环守卫（2026-09-15 加入，均有回归验证）
+### 3.1 闭环开关与审核强度门（2026-09-15 加入）
+
+链条默认止步于 `accepted-awaiting-review`（等人收口）。启用闭环后，每步在「验收 + 提交」之后自动执行协议收口：
+
+```powershell
+node "D:\dsh relay test\cc-chain.mjs" "cc-chains/v1-v3.mjs" --close-after-accept --min-reviewer external
+```
+
+- **不是自批**：收口器只做 `start → complete(带证据) → /steps/auto-review`，裁决由**独立审核通道**给出；
+  `--min-reviewer` 设置可接受的最低通道强度（external/swarm=4 > web-gemini/cc=3 > dialog=1 > manual=0）。
+  默认 `external`：只认外部通道或 Swarm 双角色盲审；若只拿到 dialog 兜底，**链条停止等人**（exit 5）而不是将就放行。
+- **停止语义**（链条遇任一种即停，状态写进 `chain-state.json`）：
+  | 收口退出码 | chain 状态 | 含义 |
+  | --- | --- | --- |
+  | 1 | `review-rejected` | 审核未通过（rejected / 仍在 review） |
+  | 3 | `closure-blocked` | 该步在链条中未落地（守卫拦截） |
+  | 5 | `reviewer-too-weak` | 只有弱通道可用 |
+  | 其他 | `closure-failed` | 收口过程异常 |
+- **状态写入顺序（踩过的坑）**：链条必须**先写 `accepted-awaiting-review` 再调用收口器**——收口器的前置守卫会读 chain-state
+  判断「该步是否已落地」，若先收口后写状态，守卫读不到 accepted 记录会直接拒绝收口（exit 3）。
+- 通过后 chain 状态为 `approved-and-closed`，并记录 `closure.reviewedBy` 供审计。
+
+### 3.2 两道防假闭环守卫（2026-09-15 加入，均有回归验证）
 
 - **验收器「改动可归属」判定**：工作树干净时，只在**最近 20 条提交**中按任务 id 匹配归属提交（链条提交信息固定含 taskId），
   匹配不到就报「无产物」并 REJECT。此前只看 HEAD，导致 (a) 任务提交之后又有人提交 docs/lesson 时，会把**别人的提交**算到本任务头上（误报越界）；
