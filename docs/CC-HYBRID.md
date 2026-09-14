@@ -185,3 +185,33 @@ curl -X POST http://127.0.0.1:3080/dsh-web-relay/route/decide -H 'content-type: 
 本任务（ccfix-20260914-hb3）写入范围严格限定为 `lib/cc-channel.js`/`lib/index.js`/`test/cc-channel.test.js`/`docs/CC-HYBRID.md`/`cc-watchdog.sh.new`。任务提示词第 4 部分曾要求同时在 `lib/cc-stats.mjs` 的 `FAILURE_RULES` 新增 `cc-quota-exhausted` 分类（供 `/health-check` 的 `ccStats.byFailure` 单列配额耗尽次数）并在 `test/cc-stats.test.mjs` 补测试，但 `lib/cc-stats.mjs`/`test/cc-stats.test.mjs` 均不在写入范围清单内，与"写入范围外零改动"的硬性验收直接冲突。**本次判断优先遵守写入范围硬约束**：`recordCcStat` 记录的 `reason='cc-quota-exhausted'` 目前会被 `lib/cc-stats.mjs` 现有规则归入 `unknown` 桶，尚不能在 `byFailure` 中单列。后续若要补齐，需要一个显式扩大写入范围到 `lib/cc-stats.mjs` + `test/cc-stats.test.mjs` 的后续任务。
 
 **已在后续任务 ccfix-20260914-stats 补齐**：`lib/cc-stats.mjs` 的 `FAILURE_RULES` 新增 `cc-quota-exhausted`/`cc-permission-denied`/`cc-timeout` 三个分类桶（排在通用 `timeout` 规则之前，命名与 §10.3 `classifyCcFailure` 消费的 `result.json.errorCode` 取值一致），`byFailure` 现可单列「配额耗尽 N 次」「权限被拒 N 次」供 `/health-check` 直接查看。
+
+## 11. AutoIteration 声明契约完整性（半状态可见化）+ /ask 注入机器生成能力清单（v1-2-autoiter-decl-integrity）
+
+### 11.1 可行性审计结论（第 0 步，动手前先取证）
+上一版 V1-2 规格声称「/ask 路径缺 autoDecision 落盘」，实测已被证伪，本次改动前先核实四项现状（均已在代码中确认，详见 `out/report.md` 的「现状取证」一节）：
+- `extractAutoIterDecl`/`autoDecision` 在 `lib/index.js` 已多处命中（`askHandler`/`executeHandler` 均调用并落盘）；
+- `writeStepState` 的写白名单**已含** `iterations`/`finalAcceptance`/`autoDecision`（`lib/index.js` 写白名单，v1.9 起）；
+- 全仓**不存在**「iterations>1 但 autoDecision=false」的告警/校验逻辑（真实缺口，本任务补齐）；
+- `/ask` payload 组装处**不存在**能力清单或声明样例注入（真实缺口，本任务补齐）。
+凡已实现的能力本任务不重写，只补齐后两项真实缺口。
+
+### 11.2 真实缺口：叙述式声明产生半状态，且此前无任何可见化
+`expr-2026-09-13_17-36-07` 实测：外部 AI 在正文写「系统设定自动演化代号为 AutoIteration（`iterations: 3`）」（叙述式，非协议要求的严格 JSON 块），`extractAutoIterDecl` 的宽松兜底只抓到 `iterations=3`，`autoDecision`/`finalAcceptance` 落成 `false`/`null`，7 步全部 `pending`。后果：版间门认为共 3 版，但每版仍需人工审核——与「人工缺席下的自动演化」矛盾，且此前无任何告警。协议依据（不改）：`docs/main-agent-lessons.json` L-2026-0903-002——只认严格 JSON 块，叙述式不解析。
+
+### 11.3 修复实现
+- `lib/autoiter-decl.js` 新增 4 个纯函数导出（`extractAutoIterDecl` 签名/行为不变）：
+  - `assessAutoIterDecl(decl)`：半状态判定。`iterations>1 && autoDecision!==true` → `halfState:true` + 可复制的严格块 `hint`；`iterations<=1` 或 `autoDecision===true` → 非半状态；入参畸形（null/非对象/字段类型错）→ `{complete:false, halfState:false, reasons:['invalid-decl'], hint:null}`，不抛错。
+  - `renderStrictDeclExample()`：严格声明块样例文案（`assessAutoIterDecl` 的 hint 与 `/ask` payload 注入共用同一份文案，单一事实来源）。
+  - `generateCapabilitiesList({ repoRoot, fsImpl, maxLen })`：机器生成能力清单——扫描 `lib/*.js` 的 `export` 名 + 解析 `docs/capabilities/registry.yaml` 条目（过滤 `status: deprecated`），≤2000 字符、稳定顺序输出；`fsImpl` 可注入（测试用 fake fs），registry 缺失/异常时优雅退化为仅 lib 导出部分或空字符串，不抛错。禁止手写硬编码清单（lesson L-2026-0914-060：外部 AI 看不到仓库时最易重造/漂移已上线能力）。
+  - `computeAutoIterDeclareUpdate(currentDecl, patch)`：受控声明补全的纯计算核心（校验 + 差值 + 留痕文案），不做任何 IO；`iterations` 必须 1-10 整数、`finalAcceptance` 必须非空字符串，非法时返回 `{ok:false, error}` 且不产出 `after`；**未携带 `autoDecision` 时保留既有值**（不回退已有的 `true`）。
+- `lib/index.js`：
+  - 新增只读缓存 `AUTO_ITER_STRICT_DECL_BLOCK`/`AUTO_ITER_CAPABILITIES_LIST`（复用既有 `REPO_ROOT`/`rel()` 范式解析路径，不依赖 `process.cwd()`，`apply()` 装配一次）；`askHandler` 内 `provider=gemini-free`（guidedPrompt 被 `callGemini`/`webGeminiAsk`/`callDialogModel` 三个降级节点复用）与 `provider=web-gemini`（独立 guidedPrompt）两处 guidedPrompt 组装均注入这两段机器生成内容，覆盖 external→web-gemini→dialog 整条降级链。
+  - `askHandler` 落 stepState 时用 `assessAutoIterDecl` 判定半状态：`halfState` 时 `console.warn`，并把判定写入响应体 `autoIterDecl` 字段与该 expr 的 `steps.json` 新增字段 `autoIterDeclAudit`（`readStepState`/`writeStepState` 白名单同步扩展）；不改变既有 `iterations`/`autoDecision`/`finalAcceptance` 取值规则，不让 `/ask` 因声明问题报错或中断。
+  - 新增 `POST /dsh-web-relay/steps/declare`（受控声明补全入口）：body `{ workspacePath, exprId, iterations?, finalAcceptance?, autoDecision?, reason?, role? }`；内部调用 `computeAutoIterDeclareUpdate` 做校验/差值计算，落盘后 `appendTrace` 记录「iterations X→Y，autoDecision X→Y，finalAcceptance X→Y；理由：...」，响应体契约 `{ ok:true, stepState, autoIterDecl }`（字段名不得改名，供主 agent 侧工具解析回显）；只改声明状态，不触发任何执行（不 `wakeMainAgent`，不动 `steps`/`status`）。
+
+### 11.4 测试
+`test/autoiter-decl.test.js` 新增 14 个用例（既有 8 个不变，全量 22 个全绿）：`assessAutoIterDecl` 半状态/非半状态/畸形入参（4 例）、严格块优先（真实模块，1 例）、`generateCapabilitiesList` 正常/registry 缺失退化/全不可读退化（3 例，均用注入 fake fs，不读写真实工作区外路径）、`computeAutoIterDeclareUpdate` 合法生效/非法拒绝/`autoDecision` 不回退（3 例）、`lib/index.js` 接线的 source 标记回归（3 例，防止「只进文档没进外呼 payload」或路由/白名单静默漂移）。
+
+### 11.5 已知残余范围限制（未做项，非遗漏）
+本任务写入范围严格限定为 `lib/autoiter-decl.js`/`lib/index.js`/`test/autoiter-decl.test.js`/`docs/CC-HYBRID.md`。`generateCapabilitiesList` 对 `registry.yaml` 采用轻量正则逐行解析（非通用 YAML 解析器，仓库无 `js-yaml` 依赖且写入范围不含 `package.json`），仅覆盖现有 `- id: / name: / status:` 的扁平列表结构；若未来 `registry.yaml` 引入嵌套/多行字符串等更复杂结构，需要升级为真正的 YAML 解析（届时需扩大写入范围到 `package.json`）。`/steps/declare` 未额外要求 `steps` 必须已存在（允许在尚无 Step List 时先行声明补全），与 `/steps/update` 的「no steps found」校验不同，属有意为之而非遗漏。
