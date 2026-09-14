@@ -137,6 +137,15 @@ node "D:\dsh-web-relay\bin\watchdog.mjs" request-restart 5
 ```
 
 - 面板白屏≠故障：先清该站点数据再判断（lesson L-2026-0913-057）。
+- **重启后必跑工具链回归**（一条命令覆盖 10 项，确认 relay 路由契约未漂移、守卫与断点语义未变）：
+  ```powershell
+  node "D:\dsh relay test\regression-post-restart.mjs"      # 期望 RESULT: 10/10 通过
+  ```
+  覆盖：体检 / 验收器（已提交=ACCEPT、未产出=REJECT）/ 收口器（已批准=noop、未落地=拒绝 exit 3）/
+  V1 验收与版间门 / 声明器探测（端点未落地=exit 4）/ 规格模板扫描 / 链条干跑（额度受限=exit 3）/ 规格门控。
+  2026-09-15 01:55 实测：重启（bootId `mu00fi5u-ac150922` → `mu1jg0z6-f86aa1cc`）后 **10/10 通过**。
+- 路由方法备忘（避免误报故障）：`/steps`、`/health-check` 为 **GET**；`/steps/update`、`/steps/auto-review`、`/steps/restructure`、`/trace` 为 **POST**——
+  对 POST 路由发 GET 会得到 400（本项目曾因此误判 `/trace` 损坏）。
 - 失败回滚：查 `bin/` 下的 watchdog 日志；必要时手工重启宿主，插件代码在磁盘上已是新版，不影响回滚到旧提交（`git revert`）。
 
 ## 8. 相关实证
