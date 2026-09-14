@@ -43,12 +43,17 @@
 链条默认止步于 `accepted-awaiting-review`（等人收口）。启用闭环后，每步在「验收 + 提交」之后自动执行协议收口：
 
 ```powershell
-node "D:\dsh relay test\cc-chain.mjs" "cc-chains/v1-v3.mjs" --close-after-accept --min-reviewer external
+node "D:\dsh relay test\cc-chain.mjs" "cc-chains/v1-v3.mjs" --close-after-accept --min-reviewer web-gemini
 ```
 
 - **不是自批**：收口器只做 `start → complete(带证据) → /steps/auto-review`，裁决由**独立审核通道**给出；
-  `--min-reviewer` 设置可接受的最低通道强度（external/swarm=4 > web-gemini/cc=3 > dialog=1 > manual=0）。
-  默认 `external`：只认外部通道或 Swarm 双角色盲审；若只拿到 dialog 兜底，**链条停止等人**（exit 5）而不是将就放行。
+  `--min-reviewer` 设置可接受的最低通道强度（external/swarm=4 > web-gemini=3 > dialog=1 > manual=0）。
+  默认 `web-gemini`：接受 external / Swarm 双角色盲审 / web-gemini 网页通道；**拒绝 dialog 兜底与 manual**（停止等人，exit 5）。
+- **自审守卫（独立于强度）**：被收口的步骤若由 cc 实现（链条项存在即视为 cc 实现），则 `reviewedBy=cc/claude` 的裁决
+  **一律拒绝**（exit 5，`error=self-review-rejected`）——即便其强度数值与 web-gemini 同级，也不允许实施方审自己。
+  实测用例：external/swarm/web-gemini 接受；cc（自审）/dialog/manual 停止。
+- 当前通道实测（2026-09-15 00:38 取自 relay `/health-check`）：`bridge.ok=true`（web-gemini 在线），
+  step 1 的裁决实测为 `reviewedBy=external`（强度 4）。
 - **停止语义**（链条遇任一种即停，状态写进 `chain-state.json`）：
   | 收口退出码 | chain 状态 | 含义 |
   | --- | --- | --- |
