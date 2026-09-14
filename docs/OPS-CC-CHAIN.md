@@ -55,12 +55,16 @@ node "D:\dsh relay test\cc-chain.mjs" "cc-chains/v1-v3.mjs" --close-after-accept
 - 当前通道实测（2026-09-15 00:38 取自 relay `/health-check`）：`bridge.ok=true`（web-gemini 在线），
   step 1 的裁决实测为 `reviewedBy=external`（强度 4）。
 - **停止语义**（链条遇任一种即停，状态写进 `chain-state.json`）：
-  | 收口退出码 | chain 状态 | 含义 |
-  | --- | --- | --- |
-  | 1 | `review-rejected` | 审核未通过（rejected / 仍在 review） |
-  | 3 | `closure-blocked` | 该步在链条中未落地（守卫拦截） |
-  | 5 | `reviewer-too-weak` | 只有弱通道可用 |
-  | 其他 | `closure-failed` | 收口过程异常 |
+  | chain 状态 | 触发条件 |
+  | --- | --- |
+  | `review-rejected` | 审核未通过（rejected / 仍在 review，退出码 1） |
+  | `closure-blocked` | 该步在链条中未落地（守卫拦截，退出码 3） |
+  | `reviewer-too-weak` | 只有弱于 `--min-reviewer` 的通道可用（退出码 5） |
+  | `self-review-rejected` | 裁决来自 cc/claude 而本步由 cc 实现（自审，退出码 5） |
+  | `closure-timeout` | 收口调用超过 20 分钟（外部审核卡住；否则链条会表现为「静默停摆」） |
+  | `closure-failed` | 收口过程其它异常 |
+- **打回后的恢复路径**：收口器遇到 `rejected` 会**先 `action=reopen` 再重新 complete + auto-review**（否则 complete/review 都会因状态不符被拒）；
+  reopen 失败则报 `reopen-failed` 并停止。人工恢复同样用 `POST /steps/update {action:'reopen'}`；修正后的实现需重新走一次机械验收再收口。
 - **状态写入顺序（踩过的坑）**：链条必须**先写 `accepted-awaiting-review` 再调用收口器**——收口器的前置守卫会读 chain-state
   判断「该步是否已落地」，若先收口后写状态，守卫读不到 accepted 记录会直接拒绝收口（exit 3）。
 - 通过后 chain 状态为 `approved-and-closed`，并记录 `closure.reviewedBy` 供审计。
