@@ -140,13 +140,18 @@ node "D:\dsh-web-relay\bin\watchdog.mjs" request-restart 5
 ```
 
 - 面板白屏≠故障：先清该站点数据再判断（lesson L-2026-0913-057）。
-- **重启后必跑工具链回归**（一条命令覆盖 10 项，确认 relay 路由契约未漂移、守卫与断点语义未变）：
+- **重启后必跑工具链回归**（一条命令覆盖 11 项，确认 relay 路由契约未漂移、守卫与断点语义未变）：
   ```powershell
-  node "D:\dsh relay test\regression-post-restart.mjs"      # 期望 RESULT: 10/10 通过
+  node "D:\dsh relay test\regression-post-restart.mjs"      # 期望 RESULT: 11/11 通过（前置条件：仓库工作树干净）
   ```
   覆盖：体检 / 验收器（已提交=ACCEPT、未产出=REJECT）/ 收口器（已批准=noop、未落地=拒绝 exit 3）/
-  V1 验收与版间门 / 声明器探测（端点未落地=exit 4）/ 规格模板扫描 / 链条干跑（额度受限=exit 3）/ 规格门控。
-  2026-09-15 01:55 实测：重启（bootId `mu00fi5u-ac150922` → `mu1jg0z6-f86aa1cc`）后 **10/10 通过**。
+  V1 验收与版间门 / 声明器探测（端点未落地=exit 4）/ 规格模板扫描 / 链条探针模式（无副作用）/ 规格门控 / 断点清理自测。
+  2026-09-15 实测：重启（bootId `mu00fi5u-ac150922` → `mu1jg0z6-f86aa1cc`）后 **11/11 通过**。
+  **前置条件**：仓库工作树必须干净——`verify-cc-task` 以**工作树**判「改动可归属」，脏树会把无关的未提交文件判成越界
+  （实测可复现：造一个 `.dirty-probe` → `[FAIL] 越界` → REJECT；移除后恢复 ACCEPT）。该现象曾造成一次无法归因的「9/11」假失败，
+  现套件在脏树时会打印 `[PRECONDITION]` 告警。
+  **套件不得有副作用**：链条相关用例必须用 `cc-chain.mjs --probe-only`（只探针、不派发、不改状态、不留锁）——
+  此前误用整链运行做「干跑」，在探针偶然返回 OK 时会**真的派发任务**（2026-09-15 02:00 实际发生：派发 → 4 秒后 cc-quota-exhausted → 暂停）。
 - 路由方法备忘（避免误报故障）：`/steps`、`/health-check` 为 **GET**；`/steps/update`、`/steps/auto-review`、`/steps/restructure`、`/trace` 为 **POST**——
   对 POST 路由发 GET 会得到 400（本项目曾因此误判 `/trace` 损坏）。
 - 失败回滚：查 `bin/` 下的 watchdog 日志；必要时手工重启宿主，插件代码在磁盘上已是新版，不影响回滚到旧提交（`git revert`）。
