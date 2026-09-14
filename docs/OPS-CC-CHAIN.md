@@ -131,7 +131,19 @@ node "D:\dsh relay test\protocol-close-step.mjs" 3 --dry-run --evidence-file "D:
 node "D:\dsh relay test\protocol-close-step.mjs" 3 --evidence-file "D:\dsh relay test\_v1-acceptance-bundle.txt" --min-reviewer web-gemini
 ```
 实测：`V1_GATE=BLOCKED`（step 2 未 approved）时收口被拒（exit 3）；伪造 `V1_GATE=PASS` 则正常进入 start→complete→auto-review 流程。
-第 7 步终验同法，证据包按其 7 条清单自建（约定末尾写 `V3_GATE=PASS|BLOCKED`）。
+
+**计划第 7 步（V3-2 三版终验）**同理，已备专用证据包生成器（按 V3-2 的 7 条清单机械核对，输出 `V3_GATE=PASS|BLOCKED`）：
+
+```powershell
+node "D:\dsh relay test\verify-v3-acceptance.mjs" --write      # 写出 _v3-acceptance-bundle.txt（exit 0=PASS / 1=BLOCKED）
+node "D:\dsh relay test\protocol-close-step.mjs" 7 --dry-run --evidence-file "D:\dsh relay test\_v3-acceptance-bundle.txt"
+node "D:\dsh relay test\protocol-close-step.mjs" 7 --evidence-file "D:\dsh relay test\_v3-acceptance-bundle.txt" --min-reviewer web-gemini
+```
+7 条清单：① 全量测试（含 `*.test.js` 子集基线）② 各步状态（cc 步 1/2/4/5/6 + 主 agent 步 3/7 均 approved）③ 版间门记录与 `incrementalStreak`
+④ `finalAcceptance` 非空 ⑤ cc 通道四项可靠性（unit/linger/restart/心跳/`ccWatchdogWarning` 在位）⑥ `sync-engine-docs --check` 零漂移
+⑦ 轨迹完整性（三代 Step 0 + 教训库条数）。实测（当前未完成态）：`V3_GATE=BLOCKED`，逐条列出未满足项，收口被正确拒绝。
+注：判断「脚本是否存在」必须用 `fs.existsSync`——`spawnSync` 跑 `node <缺失文件>` 返回 `status=1` 且**无 `error` 字段**，
+靠 `error.code==='ENOENT'` 判断是死代码（会把「未落地」误报成「漂移」，见 lesson L-2026-0915-068）。
 
 ## 5. 失败分类（可审计）
 

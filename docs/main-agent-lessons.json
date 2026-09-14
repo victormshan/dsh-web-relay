@@ -2,7 +2,7 @@
   "meta": {
     "schemaVersion": "0.1",
     "title": "dsh-web-relay 主 agent 语境能力 lesson 库（机器可读）",
-    "updatedAt": "2026-09-14T18:11:57.170Z",
+    "updatedAt": "2026-09-14T18:15:11.414Z",
     "carrierOf": "docs/main-agent-lesson-schema-v0.1.md",
     "statusConvention": "proposed（主 agent 产出）→ approved / in-runbook（用户或外部 AI 确认，记 confirmedBy/confirmedAt）；in-runbook=要点已并入 main-agent-runbook 正文；superseded=内容已并入他条（扩展值，机器消费时应跳过）",
     "confirmedAt": "2026-09-04T13:14:35.897Z",
@@ -1092,6 +1092,24 @@
         "L-2026-0915-065"
       ],
       "recordedAt": "2026-09-15T02:15:00.000Z"
+    },
+    {
+      "id": "L-2026-0915-068",
+      "title": "spawnSync 跑「node <缺失文件>」返回 status=1 且 error 为 undefined——ENOENT 分支是死代码，会把「未落地」误报成「漂移」",
+      "category": "tooling-trap",
+      "layer": "L1",
+      "trigger": "用 spawnSync 调用外部脚本/命令，并打算据其 status/error 判断「该脚本是否存在/是否可用」时",
+      "decision": "① 判断脚本或文件是否存在必须先用 fs.existsSync/fs.accessSync，**绝不**依赖 spawnSync 的 `error.code === 'ENOENT'`——当被调用的是 node 本身（`node <missing.mjs>`）时 node 启动成功、在内部报 MODULE_NOT_FOUND，spawnSync 返回 status=1 而 error 为 undefined；② 诊断文案必须区分「工具不存在/未落地」与「工具运行后报告异常」两种情形，否则会误导后续判断（本次把「V3-1 未落地」误报成「文档与引擎存在漂移」）；③ 对 spawnSync 至少要实测三种真实形态：成功、被调用程序内部失败（status≠0、无 error）、被调用文件不存在（status=1、无 error、stderr 是 node loader 报错）。",
+      "rationale": "这类错误不会让流程崩，只会让**诊断说谎**——而在无人值守的自动窗口里，诊断输出就是唯一的事实来源：一条错误的「漂移」结论可能让人去改文档，而真正的问题是某个步骤还没做。诊断的准确性本身就是可靠性的一部分。",
+      "evidence": "2026-09-15 实测 verify-v3-acceptance.mjs：`spawnSync(process.execPath, ['D:/dsh-web-relay/scripts/does-not-exist.mjs'], {encoding:'utf8'})` → `status=1, error.code=undefined, stdout.len=0, stderr.head='node:internal/modules/cjs/loader:1573'`；因此 `if (sc.error && sc.error.code === 'ENOENT')` 永不命中，第 ⑥ 条输出「文档与引擎存在漂移（sync-engine-docs --check 非 0）」，而事实是 scripts/sync-engine-docs.mjs 不存在（V3-1 未落地，已用 Test-Path 复核 .mjs/.js 均不存在）。修法：先 `fs.existsSync(syncScript)`，不存在则直接判「未落地」且不再 spawn；修后输出「⑥ scripts/sync-engine-docs.mjs 不存在 → V3-1 未落地」。",
+      "confidence": "high",
+      "status": "proposed",
+      "suggested": "proposed",
+      "crossRef": [
+        "L-2026-0915-067",
+        "L-2026-0915-066"
+      ],
+      "recordedAt": "2026-09-15T02:18:00.000Z"
     }
   ]
 }
