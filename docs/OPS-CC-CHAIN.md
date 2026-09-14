@@ -13,6 +13,8 @@
 | `run-chain.cmd` | `D:\cc-tasks` | 计划任务包装器（`schtasks /TR` 对含空格路径解析失败，故用无空格包装器） |
 | `deferred-dispatch.ps1` | `D:\cc-tasks` | 单任务延迟派发（探针确认额度恢复后入队）；链条启用后可不用 |
 | `verify-cc-task.mjs` | 工作区 | 交付验收器：写入范围 / `node --check` / 全量测试 / 文件覆盖 / BOM+CRLF 五项 |
+| `verify-v1-acceptance.mjs` | 工作区 | V1 验收证据包：对**真实计划**做门禁四态验证（默认拦截 / ALLOW_UNDECLARED 放行 / 突破重置 / 阈值拦截）+ 接线静态取证 + 测试计数 |
+| `protocol-close-step.mjs` | 工作区 | 协议收口器：按权威状态机决定动作（pending→start→complete→auto-review；已 approved 直接退出），内置「未落地不得收口」守卫 |
 | `cc-doctor.mjs` + `doctor-probe.sh` | 工作区 + `D:\cc-tasks` | 体检：进程/linger/自愈/心跳/认证/队列/额度/失败分类/链条断点 |
 | `restart-test.sh` | `D:\cc-tasks` | 受控自愈测试（kill -9 → 验证 `Restart=always` 拉起 + 心跳续跑） |
 
@@ -35,6 +37,16 @@
 2. **提交是暂定的**：每项通过机械验收后提交一次（保持工作树干净，否则下一个任务的 `git status` 范围自检会被上一任务残留污染）。
    若协议审核打回，走 `/steps/rollback` 回到该步基线。
 3. **幂等可重入**：重复触发安全（锁 + 断点 + 已完成守卫）；任一环节崩溃都不丢进度。
+
+### 3.1 两道防假闭环守卫（2026-09-15 加入，均有回归验证）
+
+- **验收器「改动可归属」判定**：工作树干净时，只在**最近 20 条提交**中按任务 id 匹配归属提交（链条提交信息固定含 taskId），
+  匹配不到就报「无产物」并 REJECT。此前只看 HEAD，导致 (a) 任务提交之后又有人提交 docs/lesson 时，会把**别人的提交**算到本任务头上（误报越界）；
+  (b) 反过来漏判已提交的任务。两条都在实测中出现过。
+- **收口器「未落地不得收口」守卫**：`protocol-close-step.mjs` 通过链条定义做 `label↔planStepId↔taskId` 映射后查 chain-state；
+  若该步状态不是 `accepted*`（如 `quota-paused` / `waiting` / `verify-rejected`），直接 exit 3 拒绝，
+  避免「代码根本没落地却把步骤置为 review」的假闭环。
+  注意：chain-state 里**只有 accepted 分支才写 planStepId**，因此不能只按 planStepId 匹配（否则暂停中的条目会被漏判、守卫被绕过）。
 
 ## 4. 运行手册
 
