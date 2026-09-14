@@ -2,7 +2,7 @@
   "meta": {
     "schemaVersion": "0.1",
     "title": "dsh-web-relay 主 agent 语境能力 lesson 库（机器可读）",
-    "updatedAt": "2026-09-14T16:16:18.172Z",
+    "updatedAt": "2026-09-14T16:26:46.622Z",
     "carrierOf": "docs/main-agent-lesson-schema-v0.1.md",
     "statusConvention": "proposed（主 agent 产出）→ approved / in-runbook（用户或外部 AI 确认，记 confirmedBy/confirmedAt）；in-runbook=要点已并入 main-agent-runbook 正文；superseded=内容已并入他条（扩展值，机器消费时应跳过）",
     "confirmedAt": "2026-09-04T13:14:35.897Z",
@@ -1038,6 +1038,24 @@
         "L-2026-0914-062"
       ],
       "recordedAt": "2026-09-15T00:20:00.000Z"
+    },
+    {
+      "id": "L-2026-0915-065",
+      "title": "断点续跑必须先清理上次尝试的 tasks/<id>/ 残留——否则 watchdog 防重复机制 + 陈旧 result.json 会让链条无限空转；重复文件还必须移出 glob 目录",
+      "category": "tooling-trap",
+      "layer": "L2",
+      "trigger": "实现或调试「失败后重跑/断点续跑」类自动化时；或派发系统对同一 taskId 有幂等保护时",
+      "decision": "① 重试同一 taskId 前，必须把上次尝试的 `tasks/<id>/` 整体归档（如 `tasks/_retry-archive/<id>-<ts>/`）后移除——原因有二：(a) 派发守护常以「tasks/<id>/task.json 已存在」判定重复并跳过入队，任务永远不会再被执行；(b) 轮询等待方会立刻读到上次那份**陈旧 result.json**（含失败 errorCode），从而再次判定失败 → 形成无限「暂停—重派—读到旧结果—再暂停」空转。② 归档而非删除，保留现场供审计。③ 派发守护把「重复/非法」文件移出队列时，**必须移到非 glob 目录**（如 `queue/.dupes/`），否则 `for q in queue/*.task.json` 下一轮会把该文件当成一个新任务 id 再次执行。④ 重试逻辑要区分「上次仍在运行」（无 result.json，不得清理，继续等待）与「上次已结算失败」（有 result.json，需清理后重跑）。",
+      "rationale": "幂等保护与断点续跑是一对天然冲突的机制：守护通过「目录已存在」实现幂等，而续跑恰恰需要重跑同一 id。若不显式区分「已完成」与「已失败但未成」，续跑会被幂等保护静默吞掉；更隐蔽的是陈旧 result.json 让等待方以为任务刚刚失败，于是每次都「正确地」暂停——表面看流程正常，实际整夜零进展。这类缺陷不会报错，只能通过「重跑路径的端到端演练」发现。",
+      "evidence": "2026-09-15 实测：cc-chain 在 V1-2 因订阅额度耗尽（errorCode=cc-quota-exhausted）暂停后，链条进入重试路径；核对发现 cc-watchdog.sh L32-36 对已存在的 tasks/<id>/task.json 直接跳过入队（把队列文件移为 queue/<id>.duplicate.<ts>.task.json），而 waitResult 又会立即读到上次失败的 result.json(190 B) → 判定再次失败 → 再次暂停，且那些 .duplicate.*.task.json 会在下一轮被 glob 当作新任务派发。修复：cc-chain.mjs 新增 clearStaleAttempt(taskId)（归档到 tasks/_retry-archive/ 后移除，仅在 prev.status ∈ {quota-paused,waiting,verify-rejected,dispatch-failed} 且存在 result.json 时触发）；cc-watchdog.sh 改为 `mkdir -p queue/.dupes` 并把重复文件移入该非 glob 目录（备份 .bak-dupes-*）。修后复跑链条：index 保持 1、V1-1 仍为 accepted-awaiting-review、V1-2 正确回到 quota-paused；watchdog 重启后 active/running、心跳正常、Restart=always 完好。额度恢复时间实测为 3:20am（下一窗口自动续跑）。",
+      "confidence": "high",
+      "status": "proposed",
+      "suggested": "proposed",
+      "crossRef": [
+        "L-2026-0914-062",
+        "L-2026-0914-064"
+      ],
+      "recordedAt": "2026-09-15T00:30:00.000Z"
     }
   ]
 }
