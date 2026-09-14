@@ -49,9 +49,14 @@ node "D:\dsh relay test\cc-chain.mjs" "cc-chains/v1-v3.mjs" --close-after-accept
 - **不是自批**：收口器只做 `start → complete(带证据) → /steps/auto-review`，裁决由**独立审核通道**给出；
   `--min-reviewer` 设置可接受的最低通道强度（external/swarm=4 > web-gemini=3 > dialog=1 > manual=0）。
   默认 `web-gemini`：接受 external / Swarm 双角色盲审 / web-gemini 网页通道；**拒绝 dialog 兜底与 manual**（停止等人，exit 5）。
-- **自审守卫（独立于强度）**：被收口的步骤若由 cc 实现（链条项存在即视为 cc 实现），则 `reviewedBy=cc/claude` 的裁决
-  **一律拒绝**（exit 5，`error=self-review-rejected`）——即便其强度数值与 web-gemini 同级，也不允许实施方审自己。
-  实测用例：external/swarm/web-gemini 接受；cc（自审）/dialog/manual 停止。
+- **自审守卫（独立于强度）**：被收口的步骤若由 cc 实现（链条项存在即视为 cc 实现），则 `reviewedBy` 属于
+  {`cc`, `claude`, **`claude-code`**} 的裁决**一律拒绝**（exit 5，`error=self-review-rejected`）——即便其强度数值与 web-gemini 同级，
+  也不允许实施方审自己。实测用例：external/swarm/web-gemini 接受；claude-code/cc/claude（自审）、dialog/manual/mainagent/未知值 停止。
+- **`reviewedBy` 真实取值集合**（查证自 `lib/index.js` L3377/L3388/L3406/L3418/L3431/L3514/L3528/L2948）：
+  `external`（外部 API；**web-gemini 成功时也记 `external`**，L3406）、`claude-code`（cc 通道审计的记法——注意 L3514
+  把 `reviewer==='cc'` 写成 **`claude-code`**，不是 `cc`，早期映射漏了这个值会导致误报「强度不足」）、`dialog`、`manual`、
+  `mainagent`（`review:false` 的步骤由主 agent 直接置 approved）。**未覆盖的值一律按 0 处理**（停止等人，宁可误停不可误放）。
+  自测：`node protocol-close-step.mjs --selftest-reviewer`（PASS，10 个取值逐一核对）。
 - 当前通道实测（2026-09-15 00:38 取自 relay `/health-check`）：`bridge.ok=true`（web-gemini 在线），
   step 1 的裁决实测为 `reviewedBy=external`（强度 4）。
 - **停止语义**（链条遇任一种即停，状态写进 `chain-state.json`）：
