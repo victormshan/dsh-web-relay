@@ -114,6 +114,20 @@ wsl.exe -e bash /mnt/d/cc-tasks/restart-test.sh
 
 链条退出码：`0` 完成或跳过；`1` 验收 REJECT / 派发失败（需人工看报告）；`3` 额度暂停或等待结算超时（下次触发自动续跑）。
 
+### 4.1 主 agent 步的收口（计划第 3 步版间门 / 第 7 步终验）
+
+这两步没有 cc 任务，证据来自**外部证据包**，因此收口器支持 `--evidence-file`；并且**证据包里的门标记是硬判据**：
+`*_GATE=BLOCKED` → 直接拒绝收口（exit 3，`gate-blocked-by-evidence`），防止把未过门的步骤置为 review。
+
+```powershell
+# 计划第 3 步（V1 版间门）：先出证据包（内含 V1_GATE=PASS|BLOCKED），再收口
+node "D:\dsh relay test\verify-v1-acceptance.mjs" --json
+node "D:\dsh relay test\protocol-close-step.mjs" 3 --dry-run --evidence-file "D:\dsh relay test\_v1-acceptance-bundle.txt"
+node "D:\dsh relay test\protocol-close-step.mjs" 3 --evidence-file "D:\dsh relay test\_v1-acceptance-bundle.txt" --min-reviewer web-gemini
+```
+实测：`V1_GATE=BLOCKED`（step 2 未 approved）时收口被拒（exit 3）；伪造 `V1_GATE=PASS` 则正常进入 start→complete→auto-review 流程。
+第 7 步终验同法，证据包按其 7 条清单自建（约定末尾写 `V3_GATE=PASS|BLOCKED`）。
+
 ## 5. 失败分类（可审计）
 
 `runner.sh` 失败时写 `result.json.errorCode`，插件侧 `classifyCcFailure` 与 `cc-stats` 消费；`cc-doctor` 按 `--since` 区分「分类生效后」与「历史遗留」：
