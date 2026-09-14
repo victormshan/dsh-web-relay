@@ -2,7 +2,7 @@
   "meta": {
     "schemaVersion": "0.1",
     "title": "dsh-web-relay 主 agent 语境能力 lesson 库（机器可读）",
-    "updatedAt": "2026-09-13T23:42:49.172Z",
+    "updatedAt": "2026-09-14T16:16:18.172Z",
     "carrierOf": "docs/main-agent-lesson-schema-v0.1.md",
     "statusConvention": "proposed（主 agent 产出）→ approved / in-runbook（用户或外部 AI 确认，记 confirmedBy/confirmedAt）；in-runbook=要点已并入 main-agent-runbook 正文；superseded=内容已并入他条（扩展值，机器消费时应跳过）",
     "confirmedAt": "2026-09-04T13:14:35.897Z",
@@ -1020,6 +1020,24 @@
         "L-2026-0914-061"
       ],
       "recordedAt": "2026-09-14T07:50:00.000Z"
+    },
+    {
+      "id": "L-2026-0914-064",
+      "title": "Windows 计划任务里的 .cmd 必须 CRLF——LF-only 批处理在调度器上下文报 9009（手动 cmd /c 却能跑）；验证必须走 schtasks /Run 真实路径",
+      "category": "tooling-trap",
+      "layer": "L1",
+      "trigger": "把自动化（脚本/链条）挂给 Windows 计划任务时；或 .cmd/.bat 由非 Windows 工具写出（node/write 工具/PowerShell here-string/git eol=lf）之后",
+      "decision": "① 所有 .cmd/.bat 一律以 CRLF 写入（node 写 '\\r\\n'，或 [IO.File]::WriteAllText(...,ASCII) 配合显式 CRLF 拼接），内容保持**纯 ASCII** 以避免代码页歧义；② 绝不把「手动 cmd /c 能跑」当作「计划任务可用」——必须 schtasks /Run 走真实调度路径验证，并核对 Last Result（0=成功；267009/0x41301=正在运行；9009=命令未找到；其他非 0 需查包装器日志）；③ 包装器必须自审计：启动与退出各写一行日志（含 %DATE% %TIME% 与 %ERRORLEVEL%），否则调度器里的失败会完全静默；④ 长途无人值守窗口（如整段额度窗口）开始前就要做这次验证，不要等到事后发现整窗空跑。",
+      "rationale": "cmd.exe 对 LF-only 批处理的解析在交互式与调度器上下文下不一致：手动 cmd /c 能正常执行，调度器里却会把参数行拆错、把第二个参数当成命令名（9009）。此类失败不写入任何业务日志（链条自己的日志一行都没有），只能靠计划任务的 Last Result 与包装器自审计发现；无人值守时其代价是一整个自动化窗口。",
+      "evidence": "2026-09-14/15 实测：run-chain.cmd 由 write 工具写出为 LF-only（CR=0 / LF=5），计划任务 dsh-cc-chain-v1v3 在 10:22-18:02 期间每次触发 Last Result=9009，chain-sched.log（GBK）记录 \"'chain.mjs' 不是内部或外部命令\"，而 chain.log 完全没有该窗口的任何记录；手动 cmd /c 运行同一文件却返回 exit 3 且链条逻辑正常（因此首次自测未暴露）。改为纯 ASCII + CRLF（CR=7 / LF=7，非 ASCII 字符=0）后 schtasks /Run：Status=Running、Last Result=267009(0x41301)，chain.log 记录「链条 v1-v3 启动 → [1/5] V1-1 → 派发 [queued]」，watchdog 随即创建 tasks/v1-1-breakthrough-gate/ 并开始执行——即修复后才真正实现无人值守推进。",
+      "confidence": "high",
+      "status": "proposed",
+      "suggested": "proposed",
+      "crossRef": [
+        "L-2026-0914-061",
+        "L-2026-0914-062"
+      ],
+      "recordedAt": "2026-09-15T00:20:00.000Z"
     }
   ]
 }
