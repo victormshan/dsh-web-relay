@@ -71,6 +71,11 @@ node "D:\dsh relay test\cc-chain.mjs" "cc-chains/v1-v3.mjs" --close-after-accept
 - **断点续跑清理逻辑可离线自测**（无需额度）：`node "D:\dsh relay test\cc-chain.mjs" --selftest-clear`
   验证两条语义——① 上次已结算（有 `result.json`）→ 归档到 `tasks/_retry-archive/` 并移除该目录（返回 true）；
   ② 上次仍在运行（无 `result.json`）→ **不得清理**（返回 false，继续等待）。2026-09-15 01:56 实测 PASS，无残留。
+- **已知额度耗尽短路（链条侧，与插件侧同源）**：撞额度后从 `claude.log` 解析恢复时间（`resets 3:20am` 一类）
+  存入 `chain-state.quotaResetsAt`，后续轮次直接短路到该时刻——不再盲探/盲派。
+  动机是实测：探针与真实任务的额度判定可能不一致（2026-09-15 02:00 探针 OK 而真实任务 4 秒后 `cc-quota-exhausted`，白耗一次派发）。
+  **保护上限 6 小时**：若解析出的时刻距现在 >6h（例如报文里的时刻已过、被滚到「明天」），则不短路、照常探针——
+  宁可多探一次，也不长时间空等。自测：`node cc-chain.mjs --selftest-quota`（PASS，三种时刻格式 + 无匹配返回 null）。
 
 ### 3.2 两道防假闭环守卫（2026-09-15 加入，均有回归验证）
 
