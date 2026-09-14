@@ -2,7 +2,7 @@
   "meta": {
     "schemaVersion": "0.1",
     "title": "dsh-web-relay 主 agent 语境能力 lesson 库（机器可读）",
-    "updatedAt": "2026-09-14T16:34:35.647Z",
+    "updatedAt": "2026-09-14T18:11:57.170Z",
     "carrierOf": "docs/main-agent-lesson-schema-v0.1.md",
     "statusConvention": "proposed（主 agent 产出）→ approved / in-runbook（用户或外部 AI 确认，记 confirmedBy/confirmedAt）；in-runbook=要点已并入 main-agent-runbook 正文；superseded=内容已并入他条（扩展值，机器消费时应跳过）",
     "confirmedAt": "2026-09-04T13:14:35.897Z",
@@ -1074,6 +1074,24 @@
         "L-2026-0915-065"
       ],
       "recordedAt": "2026-09-15T00:40:00.000Z"
+    },
+    {
+      "id": "L-2026-0915-067",
+      "title": "工具里写死的枚举/契约取值必须回源码取证——本会话两次踩到（reviewedBy 实际是 claude-code 而非 cc；/steps/declare 请求体漏 workspacePath）",
+      "category": "tooling-trap",
+      "layer": "L2",
+      "trigger": "编写与外部系统交互的工具（HTTP 客户端、状态机判定、映射表）时；或在无人值守自动化之前预设「某字段会是什么值」时",
+      "decision": "① 任何映射表/枚举（状态名、审核通道名、字段取值、退出码）都必须在源码里 grep 出**实际写入点**并把 file:line 写进注释，不凭印象；② 当同一契约被两侧实现（规格/任务 prompt 与主 agent 工具），做一次**机械一致性核对**（请求字段与响应字段集合 ⊆ 对方要求），并把它脚本化；③ 未覆盖的取值一律按最保守处理（本插件按「强度 0 = 不足，停止等人」），并在日志里区分「未映射」与「确实不足」；④ 改动契约（如给端点新增请求字段）时同步改规格与工具，不要等夜间窗口才暴露不一致。",
+      "rationale": "此类错误在本地几乎不会触发——它们只在特定分支（审核恰好走 cc 通道、端点恰好上线时）才显现，而那一刻通常是无人在场的自动窗口；届时错误还会以误导性的原因出现（把「自审」报成「强度不足」），让人误判为通道故障。把「印象值」换成「源码证据 + 机械核对」，是提前消除它的唯一办法。",
+      "evidence": "2026-09-15 两次实测：① lib/index.js L3514 `const reviewerBy = reviewer === 'cc' ? 'claude-code' : reviewer`——relay 写入的 reviewedBy 实际是 `claude-code`，而我的强度表只有 `cc`/`claude`，映射为 0 会误报「强度不足」并停链（已修：补入强度表与自审守卫，新增 `--selftest-reviewer` 对 10 个真实取值逐一核对；顺带查证反直觉事实：web-gemini 成功时 reviewedBy 也记 `external`，见 L3406）；② V1-2 规格里 `/steps/declare` 请求体写的是 `{ exprId, iterations?, finalAcceptance?, autoDecision?, reason? }`，**漏了 workspacePath**（relay 靠它解析 base 定位 steps.json），而主 agent 工具 declare-autoiter.mjs 会发送该字段——已把 workspacePath 与响应体形状（`stepState` + `autoIterDecl{complete,halfState,reasons,hint}`）写入规格契约，并让工具在响应缺契约字段时显式告警。",
+      "confidence": "high",
+      "status": "proposed",
+      "suggested": "proposed",
+      "crossRef": [
+        "L-2026-0915-066",
+        "L-2026-0915-065"
+      ],
+      "recordedAt": "2026-09-15T02:15:00.000Z"
     }
   ]
 }
