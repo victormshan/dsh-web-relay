@@ -12,6 +12,7 @@ import {
   mapExternalResult,
   shouldSkipBoot,
   sliceHandlerSource,
+  isIgnoredArtifact,
   SELFCHECK_REQUIRED_ROUTES,
   SELFCHECK_REQUIRED_HEALTH_FIELDS,
 } from '../lib/selfcheck.mjs'
@@ -93,6 +94,55 @@ test('computeDrift: 目录伪条目（本身非真实文件）两端都读不到
   const drift = await computeDrift({ manifest: ['lib'], listDir, readFile, hash: identityHash })
   // 'lib' 条目字面量本身两端都读不到（不是真实文件）→ 不计入 checked，只有 lib/index.js 计入
   assert.equal(drift.checked, 1)
+})
+
+// ---- 非源码产物排除（2026-09-15 首次上线实测：部署备份 .bak-vNNN-* 会把自检变成永久误报）----
+
+test('isIgnoredArtifact: 部署备份/临时/编辑器残留 → 排除；真实源码文件名不受影响', () => {
+  // 实测命中的三种（运行端仅有、无任何代码引用）
+  assert.equal(isIgnoredArtifact('lib/index.js.bak-v495-1789130857136'), true)
+  assert.equal(isIgnoredArtifact('lib/index.js.bak-v496-1789216494364'), true)
+  assert.equal(isIgnoredArtifact('lib/client.js.bak-v496-1789216494515'), true)
+  assert.equal(isIgnoredArtifact('lib/index.js.bak'), true)
+  assert.equal(isIgnoredArtifact('lib/index.js.orig'), true)
+  assert.equal(isIgnoredArtifact('lib/index.js~'), true)
+  assert.equal(isIgnoredArtifact('lib/index.js.tmp'), true)
+  assert.equal(isIgnoredArtifact('lib/index.js.swp'), true)
+  assert.equal(isIgnoredArtifact('lib/.DS_Store'), true)
+  // 必须放过真实源码——否则会把真漂移一起掩盖（这是本排除逻辑最关键的反向约束）
+  for (const ok of ['lib/index.js', 'lib/selfcheck.mjs', 'lib/client.js', 'docs/OCC.md', 'lib/backup.js', 'lib/bakon.js']) {
+    assert.equal(isIgnoredArtifact(ok), false, `${ok} 不应被排除`)
+  }
+  assert.equal(isIgnoredArtifact(''), false)
+  assert.equal(isIgnoredArtifact(null), false)
+})
+
+test('computeDrift: 运行端多出的 .bak 备份不计入 differing，但必须计入 ignored 并回传文件名（不静默丢弃）', async () => {
+  const { listDir, readFile } = makeFakeFsPair({
+    dirs: { lib: ['lib/index.js', 'lib/index.js.bak-v496-1789216494364'] },
+    files: {
+      source: { 'lib/index.js': 'AAA' },                                    // 源码端无备份
+      runtime: { 'lib/index.js': 'AAA', 'lib/index.js.bak-v496-1789216494364': 'OLD' },
+    },
+  })
+  const drift = await computeDrift({ manifest: ['lib'], listDir, readFile, hash: identityHash })
+  assert.deepEqual(drift.differing, [], '备份文件不得被判为 missing-source 漂移（否则每次部署后都假唤醒）')
+  assert.equal(drift.checked, 1, '仅真实源码文件参与比对')
+  assert.equal(drift.ignored, 1)
+  assert.deepEqual(drift.ignoredFiles, ['lib/index.js.bak-v496-1789216494364'])
+})
+
+test('computeDrift: 排除逻辑不得掩盖真实漂移——同名真实模块仍必须报出来', async () => {
+  const { listDir, readFile } = makeFakeFsPair({
+    dirs: { lib: ['lib/index.js', 'lib/newmod.js'] },
+    files: {
+      source: { 'lib/index.js': 'AAA' },
+      runtime: { 'lib/index.js': 'AAA', 'lib/newmod.js': 'HOT-PATCH' },      // 有人往 lib/ 塞了新模块
+    },
+  })
+  const drift = await computeDrift({ manifest: ['lib'], listDir, readFile, hash: identityHash })
+  assert.deepEqual(drift.differing, [{ path: 'lib/newmod.js', kind: 'missing-source' }])
+  assert.equal(drift.ignored, 0)
 })
 
 // ---- needsNotify ----
