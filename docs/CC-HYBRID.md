@@ -215,3 +215,32 @@ curl -X POST http://127.0.0.1:3080/dsh-web-relay/route/decide -H 'content-type: 
 
 ### 11.5 已知残余范围限制（未做项，非遗漏）
 本任务写入范围严格限定为 `lib/autoiter-decl.js`/`lib/index.js`/`test/autoiter-decl.test.js`/`docs/CC-HYBRID.md`。`generateCapabilitiesList` 对 `registry.yaml` 采用轻量正则逐行解析（非通用 YAML 解析器，仓库无 `js-yaml` 依赖且写入范围不含 `package.json`），仅覆盖现有 `- id: / name: / status:` 的扁平列表结构；若未来 `registry.yaml` 引入嵌套/多行字符串等更复杂结构，需要升级为真正的 YAML 解析（届时需扩大写入范围到 `package.json`）。`/steps/declare` 未额外要求 `steps` 必须已存在（允许在尚无 Step List 时先行声明补全），与 `/steps/update` 的「no steps found」校验不同，属有意为之而非遗漏。
+
+## 12. 规划侧反思注入（案例 Top-K + 教训 Top-K + 能力清单）+ 案例库模块化（v2-1-planning-reflection）
+
+### 12.1 可行性审计结论（第 0 步，动手前先取证）
+- `caseBlock` 命中：改动前只出现在审核侧（`buildReviewPrompt`/`runCcReviewTask`/swarm 审核任务），`/ask` 路径完全没有。
+- `lessonBlock`/`lessons-inject` 命中：改动前只出现在主 agent 唤醒装配 `attachMainAgentAssembly`（约行 1726），`/ask` 路径完全没有。
+- `/ask` 处理器（`askHandler`）三个走外部 AI 的分支（`gemini-free`/`web-gemini`/`claude`）组装的 `guidedPrompt`：改动前只有 `gemini-free`/`web-gemini` 内联注入了「能力清单」（`AUTO_ITER_CAPABILITIES_LIST`，v1-2 已实现），`claude` 分支完全没有；三个分支均**没有**案例/教训注入（真实缺口，本任务补齐）。
+- 改动前 `test/` 下无任何 `case*.test.js`，案例库解析/选择逻辑测试覆盖为 0（真实缺口）。
+- `readCaseLibrary`/`buildCaseBlock`（改动前位于 `lib/index.js` 约行 645-679）语义：正则解析 6 字段并 `trim`；打分＝词长>2 命中 `reason` +1、`query` 包含 `category`（原样，不小写）+2；`score>0` 才入选，降序，`slice(0,3)`（Top-K 硬上限 3）；无命中/空库返回空串，不留空标题。
+凡已实现的能力（能力清单生成器 `generateCapabilitiesList`、`gemini-free`/`web-gemini` 分支的能力清单内联注入、`lessons-inject.js` 的 Top-K 触发匹配、审核侧 `caseBlock`）本任务**不重写**，只补齐「/ask 规划侧缺案例+教训注入」「案例库解析/选择逻辑无独立测试模块」两项真实缺口。
+
+### 12.2 案例库模块化：`lib/case-library.js`
+把 `readCaseLibrary`/`buildCaseBlock` 的解析/打分/渲染部分抽成 3 个可测纯函数：`parseCaseLibrary(text)`、`selectTopCases(items, { query, limit })`、`renderCaseBlock(selected)`。正则、打分规则、渲染文案与旧实现逐字段等价（`category` 匹配沿用原样不小写的写法，现网 `category` 均为小写 id，效果等价）；唯一的行为增量是 `parseCaseLibrary` 内部对同 `exprId:stepId` 的条目做去重（后出现者覆盖先出现者）——这一步对现有生产数据是 no-op（`collectRejectedCases` 写入前已做同样的幂等键检查，正常文件不会有重复），只为手工编辑等异常文件提供防御性兜底。`lib/index.js` 的 `readCaseLibrary`/`buildCaseBlock` 改为只保留 IO（工作区路径解析继续走既有 `fs.resolve(EXPERIMENTS_DIR + '/...', { cwd: base })`，不可替换为 `REPO_ROOT`——`prompt-case-library.md` 是工作区状态而非仓库资源，用 `REPO_ROOT` 会静默读空），调用新模块完成解析/打分/渲染。
+
+### 12.3 `/ask` 规划侧反思注入
+新增 `buildPlanningReflectionBlock(base, promptText, { includeCapabilities })`（`lib/index.js`，`apply()` 内，紧邻 `attachMainAgentAssembly`）：
+- 案例 Top-K：`readCaseLibrary(base)` + `selectTopCases`/`renderCaseBlock`（复用 12.2 的新模块），`query` 传当前 `/ask` 的用户 `prompt`（审核侧仍传 `step.detail + step.acceptance`，两处 `query` 语义由调用方决定，选择函数本身是通用的）。
+- 教训 Top-K：复用既有 `lib/lessons-inject.js` 的 `topLessonsForTrigger`/`renderLessonBlock`（与主 agent 唤醒装配同一套生成器，未另写）。
+- 能力清单：复用既有 `AUTO_ITER_CAPABILITIES_LIST`（v1-2 已生成，未重写）。`gemini-free`/`web-gemini` 分支此前已各自内联注入过能力清单，为避免重复注入，调用时传 `{ includeCapabilities: false }`，只新增案例+教训两段；`claude` 分支此前完全未注入，使用默认 `includeCapabilities: true` 一次性补齐三段。
+- 总长度上限 6000 字符（3 段合计），超限按优先级整段舍弃（不做截断，避免破坏编号/JSON 结构）：教训 Top-K（复发预防、安全相关）＞能力清单（已有 `maxLen=2000` 自身兜底）＞案例 Top-K（具体案例、信息密度相对最低，优先舍弃）。
+- 三个分支均把 `base = baseOf(workspacePath)` 前移到 `guidedPrompt` 组装之前（原来只在 `saveRecord` 前才算，`baseOf()` 只依赖 `workspacePath`，前移安全），无命中/空库/空 lessons 时该段直接省略（不留空标题），不影响既有 `guidedPrompt` 结构。
+
+### 12.4 测试
+新增 `test/case-library.test.js`，12 个用例（正常解析/字段 trim、畸形条目安全跳过、空输入容错、去重幂等、Top-K 硬上限 3、词命中+category 命中排序、不命中返回空、空输入/空 query 容错、渲染空标题回避、渲染文案含 id/Step/reason 截断、端到端串联），全部纯函数入参，不碰真实 fs/网络。全量回归 `node --test --test-reporter=tap $(ls test/*.test.js test/*.test.mjs)` 496/499 通过，另 3 个失败（`shadow-gate.test.js` 的 `TC-Green`/`TC-GC`/`getGitHead`）与本次改动无关——`git stash` 验证改动前同样失败（本机 WSL 路径与用例硬编码的 `D:/DSH` Windows 路径/仓库 HEAD 期望不匹配的既有环境问题）。
+
+### 12.5 已知残余范围限制（未做项，非遗漏）
+- 未将 `collectRejectedCases` 从「仅 finalize 收口」扩展为「单步被打回即时入库」（任务验收②可选项）：现有 finalize 收口已覆盖「曾被 rejected 后 approved」与「仍 rejected」两类（v3.5.0 P1 修复），即时入库需要在 `executeHandler` 打回分支新增写路径，改动面会扩大到本任务写入范围以外的执行链路，且需重新评估幂等键在高并发打回下的竞态，风险高于收益，故不做。
+- 未新建第二套案例存储（严格遵循任务边界，继续用 `experiments/prompt-case-library.md` 单一数据源）。
+- 未引入新依赖，未改动审核侧 `buildReviewPrompt`/`buildCaseBlock` 既有调用点行为（仅内部实现改为委托新模块，输出字节等价）。
