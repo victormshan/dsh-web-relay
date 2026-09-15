@@ -75,7 +75,8 @@ import {
   extractAutoIterDecl as extractAutoIterDeclReal,
   assessAutoIterDecl,
   generateCapabilitiesList,
-  computeAutoIterDeclareUpdate
+  computeAutoIterDeclareUpdate,
+  buildAutoIterDeclAudit
 } from '../lib/autoiter-decl.js'
 
 test('assessAutoIterDecl：iterations=3 + autoDecision=false → halfState:true，hint 含严格块示例', () => {
@@ -207,7 +208,7 @@ test('source 标记：/ask 半状态可见化（console.warn + 响应体 autoIte
   assert.ok(src.includes('askAutoIterDecl = assessAutoIterDecl('))
   assert.ok(src.includes('AutoIteration 声明不完整:'))
   assert.ok(src.includes('autoIterDecl: askAutoIterDecl'))
-  assert.ok(src.includes('autoIterDeclAudit: askAutoIterDecl'))
+  assert.ok(src.includes('autoIterDeclAudit: askAutoIterDeclAudit'))
   assert.ok(src.includes('autoIterDeclAudit: state.autoIterDeclAudit || null'))
   assert.ok(src.includes('autoIterDeclAudit: data.autoIterDeclAudit || null'))
 })
@@ -218,4 +219,62 @@ test('source 标记：/dsh-web-relay/steps/declare 路由已注册且响应契�
   assert.ok(src.includes('stepsDeclareHandler'))
   assert.ok(src.includes('json(res, 200, { ok: true, stepState: updated, autoIterDecl })'))
   assert.ok(src.includes('computeAutoIterDeclareUpdate('))
+})
+
+// ---------------------------------------------------------------------------
+// ccfix-20260915-autoiteraudit: autoIterDeclAudit 从未落盘（先写盘、后计算）的回归修复
+// 缺陷现场：stepsDeclareHandler 曾先 writeStepState(...{ ...state, ...plan.after })（不含判定结果），
+// 再算 assessAutoIterDecl 只塞进响应体 —— steps.json 里的 autoIterDeclAudit 恒为 null。
+// buildAutoIterDeclAudit 是 declare / ask 两个入口共用的唯一构造点，以下直接对其做纯函数验证；
+// 并用 source 断言确认 lib/index.js 真正把它接在 writeStepState **之前**、且两个入口都在用它
+// （而不是各自内联拼一份，那样字段结构会漂移）。
+// ---------------------------------------------------------------------------
+test('buildAutoIterDeclAudit：declare 完整声明（iterations>1 且 autoDecision=true）→ 结构完整、非 null、source=declare、verdict.complete=true', () => {
+  const audit = buildAutoIterDeclAudit({ iterations: 3, autoDecision: true, finalAcceptance: 'E2E 全过' }, 'declare')
+  assert.ok(audit && typeof audit === 'object')
+  assert.equal(audit.source, 'declare')
+  assert.ok(typeof audit.at === 'string' && !Number.isNaN(Date.parse(audit.at)), 'at 必须是可解析的 ISO 时间戳')
+  assert.deepEqual(audit.decl, { iterations: 3, autoDecision: true, finalAcceptance: 'E2E 全过' })
+  assert.equal(audit.verdict.complete, true)
+  assert.equal(audit.verdict.halfState, false)
+})
+
+test('buildAutoIterDeclAudit：半状态声明（iterations>1 且 autoDecision!=true）→ verdict.halfState=true 且 reasons 非空', () => {
+  const audit = buildAutoIterDeclAudit({ iterations: 4, autoDecision: false, finalAcceptance: null }, 'declare')
+  assert.equal(audit.verdict.halfState, true)
+  assert.equal(audit.verdict.complete, false)
+  assert.ok(Array.isArray(audit.verdict.reasons) && audit.verdict.reasons.length > 0)
+  assert.ok(typeof audit.verdict.hint === 'string' && audit.verdict.hint.length > 0)
+})
+
+test('buildAutoIterDeclAudit：source 按调用方透传（declare/ask 共用同一构造点，结构不漂移）', () => {
+  const decl = { iterations: 2, autoDecision: true, finalAcceptance: 'ok' }
+  const declareAudit = buildAutoIterDeclAudit(decl, 'declare')
+  const askAudit = buildAutoIterDeclAudit(decl, 'ask')
+  assert.equal(declareAudit.source, 'declare')
+  assert.equal(askAudit.source, 'ask')
+  // 除 source 外结构一致（同一构造函数产出，不允许两个入口各自漂出不同字段集）
+  assert.deepEqual(Object.keys(declareAudit).sort(), Object.keys(askAudit).sort())
+  assert.deepEqual(declareAudit.decl, askAudit.decl)
+  assert.deepEqual(declareAudit.verdict, askAudit.verdict)
+})
+
+test('source 标记：stepsDeclareHandler 先算（buildAutoIterDeclAudit）后写（writeStepState），且 /ask 入口同样调用 buildAutoIterDeclAudit（不再各自内联拼字段）', () => {
+  const src = fs.readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8')
+  const idxBuild = src.indexOf('const autoIterDeclAudit = buildAutoIterDeclAudit(plan.after')
+  const idxWrite = src.indexOf('const updated = await writeStepState(base, exprId, { ...state, ...plan.after, autoIterDeclAudit }')
+  assert.ok(idxBuild > -1 && idxWrite > -1, '两处代码都必须存在')
+  assert.ok(idxBuild < idxWrite, '判定必须先算出来，再传入 writeStepState——不能反过来依赖 spread 旧 state 里的值')
+  assert.ok(src.includes("buildAutoIterDeclAudit({ iterations: ai.iterations, autoDecision: ai.autoDecision, finalAcceptance: ai.finalAcceptance }, 'ask')"), '/ask 入口须与 declare 入口共用同一构造函数')
+})
+
+test('未声明/无声明字段时保持既有 null 语义：非法 declare 请求（plan.ok=false）在算审计字段之前就已 400 返回，不会落一个伪造的空对象冒充"已评估"', () => {
+  const src = fs.readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8')
+  const idxReject = src.indexOf("if (!plan.ok) return json(res, 400, { ok: false, error: plan.error })")
+  const idxBuild = src.indexOf('const autoIterDeclAudit = buildAutoIterDeclAudit(plan.after')
+  assert.ok(idxReject > -1 && idxBuild > -1)
+  assert.ok(idxReject < idxBuild, 'plan.ok 校验失败必须在计算/落盘审计字段之前短路返回')
+  // 读写白名单默认值仍是 null（未评估），不是凭空造的 {} 或其它假值
+  assert.ok(src.includes('autoIterDeclAudit: data.autoIterDeclAudit || null'))
+  assert.ok(src.includes('autoIterDeclAudit: state.autoIterDeclAudit || null'))
 })

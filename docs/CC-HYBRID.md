@@ -216,6 +216,14 @@ curl -X POST http://127.0.0.1:3080/dsh-web-relay/route/decide -H 'content-type: 
 ### 11.5 已知残余范围限制（未做项，非遗漏）
 本任务写入范围严格限定为 `lib/autoiter-decl.js`/`lib/index.js`/`test/autoiter-decl.test.js`/`docs/CC-HYBRID.md`。`generateCapabilitiesList` 对 `registry.yaml` 采用轻量正则逐行解析（非通用 YAML 解析器，仓库无 `js-yaml` 依赖且写入范围不含 `package.json`），仅覆盖现有 `- id: / name: / status:` 的扁平列表结构；若未来 `registry.yaml` 引入嵌套/多行字符串等更复杂结构，需要升级为真正的 YAML 解析（届时需扩大写入范围到 `package.json`）。`/steps/declare` 未额外要求 `steps` 必须已存在（允许在尚无 Step List 时先行声明补全），与 `/steps/update` 的「no steps found」校验不同，属有意为之而非遗漏。
 
+### 11.6 修复：`autoIterDeclAudit` 从未落盘（先写盘、后计算）（ccfix-20260915-autoiteraudit）
+`stepsDeclareHandler` 读写白名单（11.3 所述）都已打通，但字段从未被赋值：原代码先 `writeStepState(base, exprId, { ...state, ...plan.after }, safePolicy)` 落盘（spread 的是 `readStepState` 读出来的旧 `autoIterDeclAudit`，恒为 `null` 或旧值），再 `assessAutoIterDecl(plan.after)` 算判定，但判定结果只塞进了响应体 `autoIterDecl`——权威 `steps.json` 里的 `autoIterDeclAudit` 永远是 `null`，人工缺席下的自动演化声明无法事后审计（响应是一次性的，落盘才可追溯）。对照：`/ask` 路径（11.3）当时是先算后写的，只漏了 `declare` 这一个入口。
+- 修复：`lib/autoiter-decl.js` 新增纯函数 `buildAutoIterDeclAudit(decl, source, at = new Date().toISOString())` —— `declare`/`ask` 两个入口唯一共用的构造点，返回 `{ at, source, decl:{iterations,autoDecision,finalAcceptance}, verdict:assessAutoIterDecl(decl) }`（`verdict` 字段名照抄 `assessAutoIterDecl` 真实返回：`complete`/`halfState`/`reasons`/`hint`）。
+- `lib/index.js` `stepsDeclareHandler`：把 `buildAutoIterDeclAudit(plan.after, 'declare')` 的计算移到 `writeStepState` **之前**，结果作为 `autoIterDeclAudit` 一并传入待写状态；响应体 `autoIterDecl` 改用 `autoIterDeclAudit.verdict`（`{ok:true, stepState, autoIterDecl}` 契约字段名不变）。
+- `/ask` 路径同步改为 `buildAutoIterDeclAudit({iterations,autoDecision,finalAcceptance}, 'ask')`（此前是直接把 `assessAutoIterDecl` 的裸判定塞进 `autoIterDeclAudit`，缺 `at`/`source`/`decl` 快照），与 `declare` 入口结构对齐；响应体 `autoIterDecl` 字段不变（仍是裸判定，不破坏既有消费方）。
+- 未声明/`plan.ok===false` 时依旧在计算审计字段之前就短路 400 返回，不落盘、不产出字段；`readStepState`/`writeStepState` 默认值仍是 `data.autoIterDeclAudit || null` / `state.autoIterDeclAudit || null`，未评估语义不变。
+- 测试：`test/autoiter-decl.test.js` 新增 5 例（`buildAutoIterDeclAudit` 结构完整/半状态/source 透传各 1 例 + 接线顺序回归 1 例 + 非法声明不伪造审计对象 1 例），既有用例改动仅 1 处字面量同步（`autoIterDeclAudit: askAutoIterDecl` → `autoIterDeclAudit: askAutoIterDeclAudit`），全量 27 例全绿。
+
 ## 12. 规划侧反思注入（案例 Top-K + 教训 Top-K + 能力清单）+ 案例库模块化（v2-1-planning-reflection）
 
 ### 12.1 可行性审计结论（第 0 步，动手前先取证）
