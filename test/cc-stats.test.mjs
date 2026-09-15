@@ -8,6 +8,8 @@ import {
   summarizeCcStats,
   loadStats,
   saveStats,
+  summarizeChainTasks,
+  loadChainTaskResults,
 } from '../lib/cc-stats.mjs';
 
 /** 内存 fake fsImpl：不碰真实磁盘，模拟 node:fs/promises 的 readFile/writeFile/mkdir 语义。 */
@@ -303,4 +305,227 @@ test('saveStats → loadStats 往返一致', async () => {
   assert.deepEqual(loaded.byKind, stats.byKind);
   assert.deepEqual(loaded.byFailure, stats.byFailure);
   assert.deepEqual(loaded.elapsedMs, stats.elapsedMs);
+});
+
+// --- summarizeChainTasks (ccfeat-20260916-chainstats-a) ---
+
+const NOW = Date.parse('2026-09-16T12:00:00Z');
+const WEEK_MS = 7 * 24 * 3600 * 1000;
+
+test('summarizeChainTasks: status=done 计入 ok，不计入 failed', () => {
+  const s = summarizeChainTasks(
+    [{ taskId: 't1', status: 'done', start: '2026-09-16T10:00:00Z', end: '2026-09-16T10:05:00Z' }],
+    { now: NOW },
+  );
+  assert.equal(s.total, 1);
+  assert.equal(s.ok, 1);
+  assert.equal(s.failed, 0);
+  assert.equal(s.markerMissing, 0);
+});
+
+test('summarizeChainTasks: failed 且无 errorCode/reason → 计入 failed 且落入 unknown 桶', () => {
+  const s = summarizeChainTasks(
+    [{ taskId: 't1', status: 'failed', start: '2026-09-16T10:00:00Z' }],
+    { now: NOW },
+  );
+  assert.equal(s.failed, 1);
+  assert.equal(s.byFailure.unknown, 1);
+  assert.equal(s.markerMissing, 0);
+});
+
+test('summarizeChainTasks: errorCode=cc-failed → 归入 runner-failed 桶（runner.sh 通用兜底 errorCode，语义等价 exit≠0）', () => {
+  const s = summarizeChainTasks(
+    [{ taskId: 't1', status: 'failed', start: '2026-09-16T10:00:00Z', errorCode: 'cc-failed', reason: 'claude exit=0; done.flag=missing' }],
+    { now: NOW },
+  );
+  assert.equal(s.failed, 1);
+  assert.equal(s.byFailure['runner-failed'], 1);
+});
+
+test('summarizeChainTasks: errorCode=cc-marker-missing → 单列 markerMissing，不计入 failed、不进入 byFailure（核心用例）', () => {
+  const s = summarizeChainTasks(
+    [
+      { taskId: 't1', status: 'failed', start: '2026-09-16T10:00:00Z', errorCode: 'cc-marker-missing', reason: 'claude exit=0; done.flag=missing' },
+      { taskId: 't2', status: 'done', start: '2026-09-16T09:00:00Z' },
+    ],
+    { now: NOW },
+  );
+  assert.equal(s.total, 2);
+  assert.equal(s.markerMissing, 1);
+  assert.equal(s.failed, 0, 'cc-marker-missing 不得计入 failed');
+  assert.deepEqual(s.byFailure, {}, 'cc-marker-missing 不得出现在 byFailure 中');
+  assert.equal(s.successRate, 0.5, 'successRate = ok/total，markerMissing 计入 total 但不计入 ok');
+});
+
+test('summarizeChainTasks: cc-quota-exhausted 归桶（与审核通道 classifyCcFailure 同桶名）', () => {
+  const s = summarizeChainTasks(
+    [{ taskId: 't1', status: 'failed', start: '2026-09-16T10:00:00Z', errorCode: 'cc-quota-exhausted' }],
+    { now: NOW },
+  );
+  assert.equal(s.byFailure['cc-quota-exhausted'], 1);
+});
+
+test('summarizeChainTasks: cc-timeout 归桶（与审核通道 classifyCcFailure 同桶名）', () => {
+  const s = summarizeChainTasks(
+    [{ taskId: 't1', status: 'failed', start: '2026-09-16T10:00:00Z', errorCode: 'cc-timeout' }],
+    { now: NOW },
+  );
+  assert.equal(s.byFailure['cc-timeout'], 1);
+});
+
+test('summarizeChainTasks: windowMs 过滤——窗口外（早于 now-windowMs）的条目不计入', () => {
+  const outsideStart = new Date(NOW - WEEK_MS - 3600 * 1000).toISOString(); // 早 1 小时于窗口左端
+  const s = summarizeChainTasks(
+    [{ taskId: 't1', status: 'done', start: outsideStart }],
+    { now: NOW, windowMs: WEEK_MS },
+  );
+  assert.equal(s.total, 0);
+});
+
+test('summarizeChainTasks: 窗口边界锁定——start 恰等于 now-windowMs 时计入（左闭区间）', () => {
+  const boundaryStart = new Date(NOW - WEEK_MS).toISOString();
+  const s = summarizeChainTasks(
+    [{ taskId: 't1', status: 'done', start: boundaryStart }],
+    { now: NOW, windowMs: WEEK_MS },
+  );
+  assert.equal(s.total, 1, 'start === now-windowMs 应计入，而非排除');
+});
+
+test('summarizeChainTasks: start 缺失的条目被跳过，不参与任何计数', () => {
+  const s = summarizeChainTasks(
+    [{ taskId: 't1', status: 'done' }, { taskId: 't2', status: 'done', start: '2026-09-16T10:00:00Z' }],
+    { now: NOW },
+  );
+  assert.equal(s.total, 1);
+  assert.equal(s.ok, 1);
+});
+
+test('summarizeChainTasks: 畸形输入（null / 非数组 / errorCode 为数字 / status 缺失）不抛错', () => {
+  assert.doesNotThrow(() => summarizeChainTasks(null, { now: NOW }));
+  assert.doesNotThrow(() => summarizeChainTasks('not-an-array', { now: NOW }));
+  assert.doesNotThrow(() => summarizeChainTasks(undefined, { now: NOW }));
+  const s = summarizeChainTasks(
+    [
+      null,
+      'garbage',
+      42,
+      { taskId: 't1', start: '2026-09-16T10:00:00Z', errorCode: 12345 }, // status 缺失 + errorCode 非字符串
+    ],
+    { now: NOW },
+  );
+  assert.equal(s.total, 1, '仅最后一条是合法对象且带 start，其余畸形元素被跳过');
+  assert.equal(s.failed, 1, 'status 缺失视为无法判定为 done → 计入 failed');
+  assert.equal(s.byFailure.unknown, 1, 'errorCode 非字符串被忽略，落入 unknown 桶');
+});
+
+test('summarizeChainTasks: 空数组 → total=0，successRate 为 null（非 NaN）', () => {
+  const s = summarizeChainTasks([], { now: NOW });
+  assert.equal(s.total, 0);
+  assert.equal(s.successRate, null);
+  assert.notEqual(Number.isNaN(s.successRate), true);
+});
+
+test('summarizeChainTasks: recent 最多 10 条且按时间倒序', () => {
+  const results = [];
+  for (let i = 0; i < 15; i += 1) {
+    results.push({ taskId: `t${i}`, status: 'done', start: new Date(NOW - i * 60000).toISOString() });
+  }
+  const s = summarizeChainTasks(results, { now: NOW });
+  assert.equal(s.recent.length, 10);
+  assert.equal(s.recent[0].taskId, 't0');
+  assert.equal(s.recent[9].taskId, 't9');
+});
+
+test('summarizeChainTasks: avgElapsedMs 无样本为 null；有 end 的条目参与均值计算', () => {
+  const s0 = summarizeChainTasks([{ taskId: 't1', status: 'done', start: '2026-09-16T10:00:00Z' }], { now: NOW });
+  assert.equal(s0.avgElapsedMs, null);
+
+  const s1 = summarizeChainTasks(
+    [
+      { taskId: 't1', status: 'done', start: '2026-09-16T10:00:00Z', end: '2026-09-16T10:01:00Z' }, // 60000ms
+      { taskId: 't2', status: 'done', start: '2026-09-16T10:00:00Z', end: '2026-09-16T10:02:00Z' }, // 120000ms
+    ],
+    { now: NOW },
+  );
+  assert.equal(s1.avgElapsedMs, 90000);
+});
+
+// --- loadChainTaskResults (ccfeat-20260916-chainstats-a) ---
+
+/** 内存 fake：模拟 D:\cc-tasks\tasks\<name>\result.json 目录结构。 */
+function makeFakeTasksFs(tasksDir, dirSpecs) {
+  return {
+    async readdir(dir) {
+      if (dir !== tasksDir) {
+        const err = new Error(`ENOENT: no such directory, scandir '${dir}'`);
+        err.code = 'ENOENT';
+        throw err;
+      }
+      return Object.keys(dirSpecs).map((name) => ({ name, isDirectory: () => true }));
+    },
+    async stat(p) {
+      const name = path.basename(p);
+      const spec = dirSpecs[name];
+      if (!spec) {
+        const err = new Error(`ENOENT: no such file or directory, stat '${p}'`);
+        err.code = 'ENOENT';
+        throw err;
+      }
+      return { mtimeMs: spec.mtimeMs };
+    },
+    async readFile(p) {
+      const name = path.basename(path.dirname(p));
+      const spec = dirSpecs[name];
+      if (!spec || spec.missing) {
+        const err = new Error(`ENOENT: no such file, open '${p}'`);
+        err.code = 'ENOENT';
+        throw err;
+      }
+      if (spec.badJson) return '{ not valid json';
+      return JSON.stringify(spec.result);
+    },
+  };
+}
+
+test('loadChainTaskResults: tasks 目录不存在 → 不抛错，返回空结果并说明 reason', async () => {
+  const fake = {
+    async readdir() {
+      const err = new Error('ENOENT: no such directory');
+      err.code = 'ENOENT';
+      throw err;
+    },
+  };
+  const r = await loadChainTaskResults({ root: 'D:\\nowhere', fsImpl: fake });
+  assert.deepEqual(r.results, []);
+  assert.equal(r.scanned, 0);
+  assert.equal(r.skipped, 0);
+  assert.ok(typeof r.reason === 'string' && r.reason.length > 0);
+});
+
+test('loadChainTaskResults: 单条 result.json 损坏（JSON 解析失败）→ 计入 skipped，其余任务正常返回', async () => {
+  const tasksDir = path.join('D:\\fake-root', 'tasks');
+  const fake = makeFakeTasksFs(tasksDir, {
+    good1: { mtimeMs: 3000, result: { status: 'done', start: '2026-09-16T10:00:00Z' } },
+    bad1: { mtimeMs: 2000, badJson: true },
+    missing1: { mtimeMs: 1000, missing: true },
+  });
+  const r = await loadChainTaskResults({ root: 'D:\\fake-root', fsImpl: fake });
+  assert.equal(r.scanned, 3);
+  assert.equal(r.skipped, 2, 'bad1 (JSON 损坏) + missing1 (result.json 不存在) 均计入 skipped');
+  assert.equal(r.results.length, 1);
+  assert.equal(r.results[0].taskId, 'good1');
+  assert.equal(r.reason, null);
+});
+
+test('loadChainTaskResults: 只取最近 limit 个目录（按 mtime 倒序），避免目录无界增长时全量扫描', async () => {
+  const tasksDir = path.join('D:\\fake-root', 'tasks');
+  const dirSpecs = {};
+  for (let i = 0; i < 5; i += 1) {
+    dirSpecs[`t${i}`] = { mtimeMs: i * 1000, result: { status: 'done', start: '2026-09-16T10:00:00Z' } };
+  }
+  const fake = makeFakeTasksFs(tasksDir, dirSpecs);
+  const r = await loadChainTaskResults({ root: 'D:\\fake-root', fsImpl: fake, limit: 2 });
+  assert.equal(r.scanned, 2, '只应扫描 mtime 最新的 2 个目录');
+  const taskIds = r.results.map((x) => x.taskId).sort();
+  assert.deepEqual(taskIds, ['t3', 't4'], '应取 mtime 最大的两个目录（t4, t3）');
 });
