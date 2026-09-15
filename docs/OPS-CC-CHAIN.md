@@ -198,6 +198,9 @@ node "D:\dsh-web-relay\bin\watchdog.mjs" request-restart 5
 
 # 3) 重启后核验
 #    GET http://127.0.0.1:3080/dsh-web-relay/health-check → bootId 变化；应出现新增审计字段；version 仍为 4.9.7
+#    交付漂移/路由契约自检结果看该响应的 selfCheck 字段（ccfeat-20260915-selfcheck；notified=true 说明
+#    发现异常且已 wakeMainAgent；drift.differing 非空即三副本未同步，需重跑上面的 deliver-three-copies.mjs；
+#    详见 docs/CC-HYBRID.md §16）
 ```
 
 - 面板白屏≠故障：先清该站点数据再判断（lesson L-2026-0913-057）。

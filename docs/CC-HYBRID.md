@@ -407,3 +407,66 @@ unknown 处置流程（文字流程图）：
 - 批量原子打回路径（`/steps/auto-review` 的 `batchStepIds` 且 `anyRejected` 为真时）返回的 `batchResults` 目前仅对预检阶段（not_found/非 review/锁冲突/manual）逐项带 `fallbackReason`；已取得 verdict 但被原子打回的项，`batchResults` 仍沿用既有的通用文案（「批量原子打回：同批步骤含被拒项，统一退回 rejected 待补证据」），不逐项携带该 Step 自身的 `swarm`/`findings`/`raw`。这是批量原子打回分支既有的、更广泛的可观测性缺口（非本次 unknown 语义修复引入），修复它需要改动批量分支落盘逻辑，超出本任务「修复 parseRoleReview 空打回」的范围，留待后续任务。
 - 重问仅重试一次（不做指数退避/多次重试），与任务要求的「重问一次」一致；若重问后仍 unknown 且降级标准链的所有通道也不可用，最终会走到标准链自身的 manual 降级（前端展开人工审核框），这是既有 manual 兜底行为，非本次新增。
 - 版本锚点比对限定在 `README.md`/`docs/COMPATIBILITY.md`，不校验其余文档（如更新日志类文档）里的历史版本号提及。
+
+## 16. 重启后自检钩子（ccfeat-20260915-selfcheck）
+
+### 16.1 背景
+2026-09-15 实测：宿主重启后 relay 的 `bootResumeScan` 打印「重启续跑扫描完成：… 续跑 0（）｜熔断 0（）」——这是**正确行为**（它只续跑「在飞」的 expr，已 finalize 的计划不在续跑名单里），但后果是：三副本（源码/运行端/其余副本）里仍可能残留修复前的旧代码（**交付漂移**），却没有任何机制在重启后主动叫醒主 agent 去核验，只能靠人工事后发现。另一背景：harness 侧 goal 会被宿主重启解除武装，需要人开口才重新武装；relay 侧的 `wakeMainAgent` 唤醒是唯一可自动化、无需用户开口的通道。本钩子把「重启后该做的检查」变成 relay 自己的 boot 动作，只在**发现问题时**才用既有唤醒通道叫人。
+
+### 16.2 设计与实现
+- 纯逻辑抽到 `lib/selfcheck.mjs`（不碰 IO，磁盘/子进程 IO 均由 `lib/index.js` 注入）：
+  - `computeDrift({ manifest, listDir, readFile, hash })`：按 `package.json` 的 `files` 清单展开 source/runtime 两端文件列表并逐文件比对内容摘要，区分 `content-diff`/`missing-source`/`missing-runtime` 三种漂移；
+  - `checkRouteContract({ registeredRoutes, requiredRoutes, handlerSource, requiredHealthFields })`：校验自身已注册的关键路由是否仍存在、`/health-check` handler 源码里是否仍含预期审计字段；
+  - `needsNotify({ drift, contract })`：drift 非空或 contract 未通过 → 需要通知；两者皆正常 → 不通知（无问题绝不打扰）；
+  - `mapExternalResult({ exitCode, signal, timedOut, tail })`：外部命令 exitCode/超时/信号 → `{ ok, reason, tail }`，超时与非 0 退出可通过 `reason` 文本区分（`timeout` vs `exit=N`）；
+  - `shouldSkipBoot({ lastBootId, currentBootId })`：同 bootId → 跳过（每 boot 只跑一次）。
+- `lib/index.js` 的 `bootSelfCheck()`（挂在 `bootResumeScan()` 定义之后、boot 尾部与 `bootResumeScan()` 同批次异步触发，约 L4763-4767 调用点）：
+  1. 读 `web-relay/selfcheck/.last-boot-id` 判定是否已跑过本 boot（`shouldSkipBoot`）；
+  2. 交付漂移：`REPO_ROOT`（源码端，`DSH_RELAY_REPO` 或 import.meta.url 上溯）vs 本插件实际加载副本（运行端，import.meta.url 推导），按 `PLUGIN_FILES_MANIFEST`（即 `package.json` 的 `files`）逐文件 sha256；
+  3. 路由契约：读自身源码文本，用既有 `scripts/sync-engine-docs.mjs` 的 `extractRoutes()` 正则提取已注册路由（不重复造轮子），与 `/health-check` handler 源码切片一起传给 `checkRouteContract`；
+  4. 可选外部重回归：`DSH_RELAY_SELFCHECK_CMD` 非空时，用 `node:child_process` **异步 `spawn`**（`shell:true`，超时后 `SIGKILL`，默认超时 `DSH_RELAY_SELFCHECK_TIMEOUT_MS` 见下表）执行；
+  5. `needsNotify(...)` 或外部命令失败 → `wakeMainAgent({ sessionId, handoffText })`；`sessionId` 取 `process.env.DSH_SESSION_ID`，缺失则回退到最近一个（`updatedAt` 最大）落盘 expr 的 `sessionId`，两者皆无则只落盘记 `wakeReason`、不报错；
+  6. 结果落盘到 `<workspace>/web-relay/selfcheck/<bootId>.json`，并写入内存态 `lastSelfCheck` 供 `/health-check` 直读暴露。
+  7. 全程 `try/catch` 包裹，任何一步异常只 `console.warn` 记录、不 `throw`，不影响 boot、不使 `/health-check` 500。
+
+### 16.3 为何必须异步、绝不能用 execSync
+宿主对本插件的健康探针以数秒级超时轮询，连续多次探测不到响应即判定「宿主失联」→ 触发 `bin/watchdog.mjs` 重启整个宿主进程（详见 §7/§8 的重启风暴实证）。若自检的外部重回归用 `execSync` 同步执行，一次动辄 1-2 分钟的阻塞会让事件循环在这段时间内完全无法响应任何请求（包括探针本身），造成「探针连续超时 → watchdog 判定失联 → 重启宿主 → 重启后又触发一次同步阻塞」的自我维持重启风暴——这正是本仓库刚修复过的故障类别（见 §7 的实测：拉起宿主 18 次、判定重启 37 次）。因此：
+- `runSelfCheckExternalCommand()`（`lib/index.js`）一律用 `node:child_process` 的 `spawn`（配合 `setTimeout` + `child.kill('SIGKILL')` 超时熔断），绝不使用 `execSync`；
+- `test/selfcheck.test.js` 有一条源码契约用例专门断言该函数体内不含 `execSync(` 调用、且含 `spawn(` 调用，防止后人「图省事」把它退回同步阻塞实现；
+- 默认（不设 `DSH_RELAY_SELFCHECK_CMD`）只做进程内的漂移比对 + 路由契约判定，均为内存/本地磁盘操作，无网络、无子进程，实测耗时为毫秒级。
+
+### 16.4 开关与字段
+| 环境变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `DSH_RELAY_SELFCHECK_CMD` | 未设置（不跑） | 外部重回归命令（如主 agent 的 `regression-post-restart.mjs`）；**严格 opt-in**，不设则只做进程内检查 |
+| `DSH_RELAY_SELFCHECK_TIMEOUT_MS` | `240000`（4 分钟） | 外部命令超时后 `SIGKILL` 熔断 |
+
+`/health-check` 响应新增 `selfCheck` 字段（`null` = 尚未跑完，boot 期间短暂出现）：
+```jsonc
+{
+  "selfCheck": {
+    "at": "2026-09-15T12:00:00.000Z",
+    "bootId": "mu1xhb9d-eca1256e",
+    "ran": true,
+    "drift": { "checked": 42, "differing": [{ "path": "bin/watchdog.mjs", "kind": "content-diff" }] },
+    "contract": { "ok": true, "failed": [] },
+    "external": { "ran": false, "ok": null, "reason": "DSH_RELAY_SELFCHECK_CMD 未设置（默认不跑外部重回归，见 docs/CC-HYBRID.md）", "tail": "" },
+    "notified": true,
+    "wakeReason": null
+  }
+}
+```
+结果同时落盘到 `<workspace>/web-relay/selfcheck/<bootId>.json`（幂等标记 `<workspace>/web-relay/selfcheck/.last-boot-id`）。
+
+### 16.5 失败模式（均 fail-open）
+- `REPO_ROOT` 未设置 `DSH_RELAY_REPO` 时会回退到运行端自身路径，此时源码端=运行端，drift 恒为空——这不是缺陷，是「没有独立源码端可比对」时的安全兜底（不会产生假阳性）。
+- 清单条目缺失/不可读、`listDir`/`readFile` 抛错 → 该文件按「缺失」处理（`missing-source`/`missing-runtime`），不会让整个自检抛出。
+- 外部命令不存在/权限不足 → `spawn` 触发 `error` 事件，映射为 `{ ok:false, reason:'spawn 失败：...' }`，不抛出。
+- 外部命令超时 → `SIGKILL` 熔断，`reason` 含 `timeout` 字样，与「exit≠0」可区分。
+- `sessionId` 缺失（无 `DSH_SESSION_ID` 且无任何落盘 expr 的 `sessionId`）→ 只落盘、`wakeReason` 记录原因，不报错、不重试。
+- 每 boot 仅执行一次（`shouldSkipBoot` 以 bootId 为幂等键），防止 boot 序列被多次触发（如 apply 被重复调用）时重复唤醒刷屏。
+
+### 16.6 已知残余范围限制（未做项，非遗漏）
+- 外部重回归默认不跑：`DSH_RELAY_SELFCHECK_CMD` 需要显式设置才启用。理由是本钩子在 boot 路径上执行，任何默认开启的外部命令都会成为「boot 必经的额外耗时/额外失败面」，与「boot 绝不能被自检拖慢/拖垮」的硬约束冲突；把它做成 opt-in，让运维方（或主 agent 自身的部署脚本）按需在自己可控的环境里接上（例如主 agent 的 `regression-post-restart.mjs`），而不是让 relay 自身对外部脚本的存在与退出码语义做假设。
+- 路由契约自检的 `requiredRoutes`/`requiredHealthFields` 是当前已知的关键子集（非全量自动派生自 `webServer.register` 调用），随功能演进需要人工同步维护（与 §14 的 `sync-engine-docs.mjs` 面对的维护成本是同一类问题）。
+- 交付漂移比对的范围严格等于 `package.json` 的 `files` 清单——清单外的文件（如 `node_modules`、临时产物）不在比对范围内，这是刻意的（清单即「交付契约」，不应扩大范围）。

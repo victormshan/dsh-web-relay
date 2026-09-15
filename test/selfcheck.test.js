@@ -1,0 +1,250 @@
+// ccfeat-20260915-selfcheck: 重启后自检钩子单测（真实模块 lib/selfcheck.mjs）
+// 全部为纯函数用例：不碰网络、不 spawn 真进程、不读写真实磁盘（listDir/readFile 均为内存 fake）。
+// 运行：node --test test/selfcheck.test.js
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import {
+  computeDrift,
+  checkRouteContract,
+  needsNotify,
+  mapExternalResult,
+  shouldSkipBoot,
+  sliceHandlerSource,
+  SELFCHECK_REQUIRED_ROUTES,
+  SELFCHECK_REQUIRED_HEALTH_FIELDS,
+} from '../lib/selfcheck.mjs'
+import { extractRoutes } from '../scripts/sync-engine-docs.mjs'
+
+/** 构造一对内存 fake（source/runtime 两端），files: { source: {rel: content}, runtime: {rel: content} }，
+ *  dirs: { rel: [childRelPaths...] }（模拟目录展开——source/runtime 共用同一份目录结构声明，
+ *  实际内容差异由 files 决定）。 */
+function makeFakeFsPair({ dirs = {}, files = { source: {}, runtime: {} } } = {}) {
+  const listDir = async (root, entry) => dirs[entry] || []
+  const readFile = async (root, rel) => {
+    const bucket = files[root] || {}
+    return Object.prototype.hasOwnProperty.call(bucket, rel) ? bucket[rel] : null
+  }
+  return { listDir, readFile }
+}
+
+const identityHash = (content) => content
+
+// ---- computeDrift ----
+
+test('computeDrift: 两端一致 → drift 为空', async () => {
+  const { listDir, readFile } = makeFakeFsPair({
+    dirs: { lib: ['lib/index.js', 'lib/selfcheck.mjs'] },
+    files: {
+      source: { 'lib/index.js': 'AAA', 'lib/selfcheck.mjs': 'BBB' },
+      runtime: { 'lib/index.js': 'AAA', 'lib/selfcheck.mjs': 'BBB' },
+    },
+  })
+  const drift = await computeDrift({ manifest: ['lib'], listDir, readFile, hash: identityHash })
+  assert.equal(drift.checked, 2)
+  assert.deepEqual(drift.differing, [])
+})
+
+test('computeDrift: 单文件内容不同 → 精确定位到该相对路径（content-diff）', async () => {
+  const { listDir, readFile } = makeFakeFsPair({
+    dirs: { lib: ['lib/index.js', 'lib/selfcheck.mjs'] },
+    files: {
+      source: { 'lib/index.js': 'AAA-fixed', 'lib/selfcheck.mjs': 'BBB' },
+      runtime: { 'lib/index.js': 'AAA-old', 'lib/selfcheck.mjs': 'BBB' },
+    },
+  })
+  const drift = await computeDrift({ manifest: ['lib'], listDir, readFile, hash: identityHash })
+  assert.deepEqual(drift.differing, [{ path: 'lib/index.js', kind: 'content-diff' }])
+})
+
+test('computeDrift: 运行端缺文件 → 归类 missing-runtime（不与 missing-source 混淆）', async () => {
+  const { listDir, readFile } = makeFakeFsPair({
+    dirs: { lib: ['lib/new-file.mjs'] },
+    files: {
+      source: { 'lib/new-file.mjs': 'AAA' },
+      runtime: {},
+    },
+  })
+  const drift = await computeDrift({ manifest: ['lib'], listDir, readFile, hash: identityHash })
+  assert.deepEqual(drift.differing, [{ path: 'lib/new-file.mjs', kind: 'missing-runtime' }])
+})
+
+test('computeDrift: 源码端缺文件 → 归类 missing-source（不与 missing-runtime 混淆）', async () => {
+  const { listDir, readFile } = makeFakeFsPair({
+    dirs: { lib: ['lib/legacy-file.mjs'] },
+    files: {
+      source: {},
+      runtime: { 'lib/legacy-file.mjs': 'AAA' },
+    },
+  })
+  const drift = await computeDrift({ manifest: ['lib'], listDir, readFile, hash: identityHash })
+  assert.deepEqual(drift.differing, [{ path: 'lib/legacy-file.mjs', kind: 'missing-source' }])
+})
+
+test('computeDrift: 目录伪条目（本身非真实文件）两端都读不到内容 → 不计入 checked/differing', async () => {
+  const { listDir, readFile } = makeFakeFsPair({
+    dirs: { lib: ['lib/index.js'] },
+    files: {
+      source: { 'lib/index.js': 'AAA' },
+      runtime: { 'lib/index.js': 'AAA' },
+    },
+  })
+  const drift = await computeDrift({ manifest: ['lib'], listDir, readFile, hash: identityHash })
+  // 'lib' 条目字面量本身两端都读不到（不是真实文件）→ 不计入 checked，只有 lib/index.js 计入
+  assert.equal(drift.checked, 1)
+})
+
+// ---- needsNotify ----
+
+test('needsNotify: 仅 drift 非空 → 需要通知', () => {
+  assert.equal(needsNotify({ drift: { differing: [{ path: 'x', kind: 'content-diff' }] }, contract: { ok: true } }), true)
+})
+
+test('needsNotify: 仅 contract 失败 → 需要通知', () => {
+  assert.equal(needsNotify({ drift: { differing: [] }, contract: { ok: false, failed: ['route-missing:/x'] } }), true)
+})
+
+test('needsNotify: drift 为空且 contract 通过 → 不需要通知', () => {
+  assert.equal(needsNotify({ drift: { differing: [] }, contract: { ok: true } }), false)
+})
+
+// ---- mapExternalResult ----
+
+test('mapExternalResult: exit=0 → ok', () => {
+  const r = mapExternalResult({ exitCode: 0, signal: null, timedOut: false, tail: '' })
+  assert.equal(r.ok, true)
+  assert.equal(r.reason, null)
+})
+
+test('mapExternalResult: exit≠0 → fail 且带 tail', () => {
+  const r = mapExternalResult({ exitCode: 3, signal: null, timedOut: false, tail: 'boom\n' })
+  assert.equal(r.ok, false)
+  assert.match(r.reason, /exit=3/)
+  assert.equal(r.tail, 'boom\n')
+})
+
+test('mapExternalResult: 超时 → fail 且 reason 含 timeout（与 exit≠0 可区分）', () => {
+  const timeoutResult = mapExternalResult({ exitCode: null, signal: 'SIGKILL', timedOut: true, tail: '' })
+  const failResult = mapExternalResult({ exitCode: 1, signal: null, timedOut: false, tail: '' })
+  assert.equal(timeoutResult.ok, false)
+  assert.match(timeoutResult.reason, /timeout/)
+  assert.ok(!failResult.reason.includes('timeout'))
+})
+
+// ---- shouldSkipBoot ----
+
+test('shouldSkipBoot: 同 bootId → skip', () => {
+  assert.equal(shouldSkipBoot({ lastBootId: 'boot-1', currentBootId: 'boot-1' }), true)
+})
+
+test('shouldSkipBoot: 不同 bootId → run（不跳过）', () => {
+  assert.equal(shouldSkipBoot({ lastBootId: 'boot-1', currentBootId: 'boot-2' }), false)
+})
+
+test('shouldSkipBoot: 无历史记录（首次 boot）→ run（不跳过）', () => {
+  assert.equal(shouldSkipBoot({ lastBootId: null, currentBootId: 'boot-1' }), false)
+})
+
+// ---- checkRouteContract ----
+
+test('checkRouteContract: 路由齐全 + 字段齐备 → ok', () => {
+  const r = checkRouteContract({
+    registeredRoutes: ['/dsh-web-relay/health-check', '/dsh-web-relay/ask'],
+    requiredRoutes: ['/dsh-web-relay/health-check'],
+    handlerSource: '{ ok: true, selfCheck: heavy.selfCheck }',
+    requiredHealthFields: ['ok', 'selfCheck'],
+  })
+  assert.equal(r.ok, true)
+  assert.deepEqual(r.failed, [])
+})
+
+test('checkRouteContract: 路由缺失 → 精确报告缺失的路由', () => {
+  const r = checkRouteContract({
+    registeredRoutes: ['/dsh-web-relay/ask'],
+    requiredRoutes: ['/dsh-web-relay/health-check'],
+    handlerSource: '{ ok: true }',
+    requiredHealthFields: ['ok'],
+  })
+  assert.equal(r.ok, false)
+  assert.deepEqual(r.failed, ['route-missing:/dsh-web-relay/health-check'])
+})
+
+test('checkRouteContract: health 字段缺失 → 精确报告缺失的字段', () => {
+  const r = checkRouteContract({
+    registeredRoutes: ['/dsh-web-relay/health-check'],
+    requiredRoutes: ['/dsh-web-relay/health-check'],
+    handlerSource: '{ ok: true }',
+    requiredHealthFields: ['ok', 'selfCheck'],
+  })
+  assert.equal(r.ok, false)
+  assert.deepEqual(r.failed, ['health-field-missing:selfCheck'])
+})
+
+// ---- 源码契约：防止后人图省事把自检外部命令退回同步阻塞实现 ----
+
+test('源码契约: lib/index.js 的自检外部命令实现未使用 execSync（必须异步 spawn，不得阻塞事件循环）', () => {
+  const indexPath = fileURLToPath(new URL('../lib/index.js', import.meta.url))
+  const src = readFileSync(indexPath, 'utf8')
+  // 精确定位自检外部命令的执行函数本体（而非仅按开关名邻近窗口猜测——函数名字面量唯一，
+  // 不会因周边注释长度变化而漂移出窗口）。
+  const startMarker = 'async function runSelfCheckExternalCommand'
+  const start = src.indexOf(startMarker)
+  assert.ok(start !== -1, '未找到 runSelfCheckExternalCommand，自检外部命令执行函数可能被移除或改名')
+  const endMarker = 'async function mostRecentExprSessionId'
+  const endIdx = src.indexOf(endMarker, start)
+  const fnBody = endIdx === -1 ? src.slice(start, start + 3000) : src.slice(start, endIdx)
+  assert.ok(!/execSync\s*\(/.test(fnBody), '自检外部命令执行函数内发现 execSync 调用——必须用 node:child_process 的异步 spawn，否则会阻塞事件循环，触发探针超时→watchdog 重启风暴')
+  assert.match(fnBody, /spawn\s*\(/, '自检外部命令执行函数内未发现 spawn 调用')
+})
+
+// ---- 端到端契约：对**真实 lib/index.js** 跑一遍契约检查 ----
+// 2026-09-15 主 agent 修复时补：原实现（切片用 indexOf 找 'const healthCheckHandler = async'）会命中
+// **该函数自己的搜索字面量**（位置在真实定义之前），切片退化成 96 字符 → 14 个必需字段全部判为「缺失」
+// → 契约检查恒定失败 → 每次宿主重启都假唤醒一次主 agent。原来的 18 个用例全是喂内存 fake 的纯函数用例，
+// **从未触碰真实提取路径**，因此全部通过却漏掉了这个必然发生的缺陷。
+// 下面这条用例直接对真实源码跑「路由提取 + 切片 + 契约判定」，是本类陷阱的回归守卫。
+test('端到端契约: 对真实 lib/index.js 跑契约检查必须通过（守卫切片自匹配陷阱）', () => {
+  const indexPath = fileURLToPath(new URL('../lib/index.js', import.meta.url))
+  const src = readFileSync(indexPath, 'utf8')
+
+  const sliced = sliceHandlerSource(src)
+  assert.ok(sliced.length > 500, `health handler 切片过短（${sliced.length} 字符）——极可能又命中了搜索字面量自身而非真实定义`)
+  // 位置性断言（不能只断言 includes——maxLen 兜底会把锚点之后的真实定义一并吞进来，
+  // 于是「切片起点其实是 decoy」这种情况会被 includes 放过。变异测试实测过这个坑。）
+  assert.ok(
+    sliced.startsWith('const healthCheckHandler = async (req, res)'),
+    `切片起点不是真实定义（起点前出现锚点字面量时会命中它）：${JSON.stringify(sliced.slice(0, 60))}`
+  )
+
+  const contract = checkRouteContract({
+    registeredRoutes: extractRoutes(src),
+    requiredRoutes: SELFCHECK_REQUIRED_ROUTES,
+    handlerSource: sliced,
+    requiredHealthFields: SELFCHECK_REQUIRED_HEALTH_FIELDS,
+  })
+  assert.equal(contract.ok, true, `真实源码契约检查未通过（会导致每次 boot 假唤醒）：${JSON.stringify(contract.failed)}`)
+})
+
+test('端到端契约: 路由提取器必须能提出自检必需的全部路由', () => {
+  const indexPath = fileURLToPath(new URL('../lib/index.js', import.meta.url))
+  const routes = extractRoutes(readFileSync(indexPath, 'utf8'))
+  const missing = SELFCHECK_REQUIRED_ROUTES.filter((r) => !routes.includes(r))
+  assert.deepEqual(missing, [], `真实源码缺少必需路由：${JSON.stringify(missing)}`)
+})
+
+test('切片守卫: 锚点字面量出现在源码中较早位置时，必须取真实定义（lastIndexOf）而非首个命中', () => {
+  // 构造「搜索字面量在前、真实定义在后」的最小复现——这正是本次线上陷阱的形态。
+  // 注意断言必须落在**切片起点**上：只断言 includes 会被 maxLen 兜底放过（变异测试实测）。
+  const decoy = `function helper() { return src.indexOf('${'const healthCheckHandler = async'}') }`
+  const real = 'const healthCheckHandler = async (req, res) => {\n  const ok = true\n  const selfCheck = 1\n}\n'
+  const src = decoy + '\n' + real
+  const s = sliceHandlerSource(src)
+  assert.ok(
+    s.startsWith('const healthCheckHandler = async (req, res)'),
+    `切片起点落在 decoy 上（命中搜索字面量自身）：${JSON.stringify(s.slice(0, 60))}`
+  )
+  assert.ok(s.includes('const selfCheck = 1'), '切片未覆盖到真实定义体')
+  assert.equal(sliceHandlerSource(''), '')
+  assert.equal(sliceHandlerSource('无锚点'), '')
+})
