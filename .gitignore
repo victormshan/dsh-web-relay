@@ -14,3 +14,8 @@ node_modules/
 
 # watchdog 运行时单例锁
 bin/.watchdog.lock
+
+# 重启请求信号文件（A8，2026-09-16）：由 `watchdog.mjs request-restart` 写入、被常驻 watchdog
+# 消费后删除；**在「重启待执行」的窗口内文件存在**，若不忽略会让仓库呈现「脏」——
+# 此时任何 `verify-cc-task` 都会把它当成越界改动 → REJECT（回归套件也要求工作树必须干净）。
+bin/restart.request.json
