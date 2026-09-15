@@ -62,7 +62,8 @@
     "docs/capabilities/README.md",
     "docs/capabilities/registry.yaml",
     "scripts/verify-capabilities.mjs",
-    "scripts/verify-lessons.mjs"
+    "scripts/verify-lessons.mjs",
+    "scripts/sync-engine-docs.mjs"
   ],
   "license": "MIT"
 }

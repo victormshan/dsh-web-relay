@@ -278,3 +278,79 @@ curl -X POST http://127.0.0.1:3080/dsh-web-relay/route/decide -H 'content-type: 
 - 未改动 `restructure` 端点既有的 `evaluateBreakthroughPlan` 硬门禁（400 拦截）与其响应结构，两处门禁（`restructure` 提交时 / 版间门推进时）职责不同：前者拦截"提交一个仍不达标的新计划"，后者拦截"在未补突破项前就推进版本号"，二者互补而非重复。
 - 未改变 `rejectStreak`/`paused` 熔断语义：`breakthroughBlocked` 只是"暂不推进版本号 + 要求补突破项"，不等价于打回或暂停，不清空 `activeSteps`、不改 `step.status`。
 - 未对 `breakthroughBlocked` 字段做历史清理（一旦阻断发生，字段会一直保留到下次成功推进版本号时被新的写入覆盖）；面板展示/清理策略超出本任务写入范围。
+
+## 14. 引擎↔文档一致性校验器（V3-1，机器事实清单固化）
+
+### 14.1 背景
+此前发生过"文档与代码漂移"：突破度门禁的判定规则只在文档里成立、环境开关的语义描述与代码实现不一致。`scripts/sync-engine-docs.mjs` 新增只读校验器，从代码里机械提取三类事实（路由 / 环境开关 / 版本锚点）并与文档比对，`--check` 漂移即非零退出，防止本文档与 `lib/index.js`、`lib/*.js`、`package.json` 再次脱节。
+
+### 14.2 三类机器事实与匹配规则
+- **路由**：从 `lib/index.js` 提取所有 `webServer.register({ ..., path: '...' })` 的 path 字符串；与本文档做子串比对，缺项记为 `missing-in-doc`；反向从本文档提取形如 `/dsh-web-relay/...` 的路径片段，代码里未注册的记为 `stale-in-doc`。
+- **环境开关**：从 `lib/*.js` 提取所有 `process.env.DSH_*` 引用；与本文档做子串比对，缺项记为 `missing-in-doc`。
+- **版本锚点**：取 `package.json` 的 `version`；分别在 `README.md`、`docs/COMPATIBILITY.md` 中查找该精确字符串，或退化为 `{major}.{minor}.x` 简写锚点（本仓库 `docs/COMPATIBILITY.md` 曾用 "4.9.x" 这种写法）任一命中即算记载。
+
+### 14.3 路由表全量清单（与 `lib/index.js` 注册的 25 条一一对应）
+| 路径 | 处理函数（`lib/index.js`） |
+| --- | --- |
+| `/dsh-web-relay/status` | `statusHandler` |
+| `/dsh-web-relay/health-check` | `healthCheckHandler` |
+| `/dsh-web-relay/ask` | `askHandler` |
+| `/dsh-web-relay/context` | `contextHandler` |
+| `/dsh-web-relay/parse` | `parseHandler` |
+| `/dsh-web-relay/execute` | `executeHandler` |
+| `/dsh-web-relay/steps` | `stepsHandler` |
+| `/dsh-web-relay/steps/update` | `stepUpdateHandler` |
+| `/dsh-web-relay/steps/declare` | `stepsDeclareHandler` |
+| `/dsh-web-relay/steps/v2-check` | `v2CheckHandler` |
+| `/dsh-web-relay/route/decide` | `routeDecideHandler` |
+| `/dsh-web-relay/steps/auto-review` | `autoReviewHandler` |
+| `/dsh-web-relay/steps/alternatives-review` | `alternativesReviewHandler` |
+| `/dsh-web-relay/trace` | `traceHandler` |
+| `/dsh-web-relay/replay` | `replayHandler` |
+| `/dsh-web-relay/shadow` | `shadowHandler` |
+| `/dsh-web-relay/traces` | `tracesHandler` |
+| `/dsh-web-relay/record` | `recordHandler` |
+| `/dsh-web-relay/protocol` | `protocolHandler` |
+| `/dsh-web-relay/steps/finalize` | `finalizeHandler` |
+| `/dsh-web-relay/steps/rollback` | `rollbackHandler` |
+| `/dsh-web-relay/steps/restructure` | `restructureHandler` |
+| `/dsh-web-relay/admin/prepare-restart` | `adminPrepareHandler` |
+| `/dsh-web-relay/admin/resume-scan` | `adminResumeScanHandler` |
+| `/dsh-web-relay/admin/heartbeat-check` | `adminHeartbeatHandler` |
+
+### 14.4 环境开关全量清单（与 `lib/*.js` 提取的 20 个一一对应）
+| 开关 | 定义/读取位置（`lib/`） |
+| --- | --- |
+| `DSH_CC_REVIEW_ENABLED` | `index.js` |
+| `DSH_CC_REVIEW_POLL_MS` | `index.js` |
+| `DSH_RELAY_BATCH_CONCURRENCY` | `index.js` |
+| `DSH_RELAY_BREAKTHROUGH_ALLOW_UNDECLARED` | `breakthrough-gate.js` |
+| `DSH_RELAY_BREAKTHROUGH_MAX_INCREMENTAL` | `breakthrough-gate.js`、`index.js` |
+| `DSH_RELAY_BRIDGE` | `index.js` |
+| `DSH_RELAY_BRIDGE_STALL_MS` | `index.js` |
+| `DSH_RELAY_CLAUDE_MODEL` | `index.js` |
+| `DSH_RELAY_GC_MS` | `index.js` |
+| `DSH_RELAY_HEALTH_CACHE_MS` | `index.js` |
+| `DSH_RELAY_HEARTBEAT_MAX_AGE_MS` | `index.js` |
+| `DSH_RELAY_HEARTBEAT_MIN_GAP_MS` | `index.js` |
+| `DSH_RELAY_HEARTBEAT_MS` | `index.js` |
+| `DSH_RELAY_HEARTBEAT_STALE_MS` | `index.js` |
+| `DSH_RELAY_REPO` | `index.js` |
+| `DSH_RELAY_REPO_PATH` | `index.js` |
+| `DSH_RELAY_WEBHOOK_URL` | `index.js` |
+| `DSH_RELAY_WORKSPACE` | `index.js` |
+| `DSH_SESSION_ID` | `index.js` |
+| `DSH_WORKSPACE` | `index.js` |
+
+### 14.5 版本锚点
+`package.json` 当前 `version` 为 `4.9.7`；`README.md`（版本对照表/更新记录）与 `docs/COMPATIBILITY.md`（兼容矩阵）均已用精确字符串 `4.9.7` 记载，`--check` 对此类零命中。
+
+### 14.6 实现与测试
+- 可注入纯函数：`collectEngineFacts({ readFile, root, libFiles })` / `collectDocFacts({ readFile, root })` / `diffFacts(engine, docs)`，CLI 只做 `fs` IO 与退出码（`scripts/sync-engine-docs.mjs`）。
+- `test/sync-engine-docs.test.js` 用真实临时目录（`fs.mkdtempSync(path.join(os.tmpdir(), 'sed-'))`）+ 真实 `fs.readFileSync` 夹具覆盖：无漂移通过、路由缺失、环境开关缺失、版本锚点不一致、版本锚点简写格式、stale-in-doc（文档未注册路由）、文档缺失（诊断 warning 不抛栈）、正则无命中（warning 不静默通过）共 8 例；夹具刻意不用内存 map + 手写正斜杠路径字符串，因为脚本内部用 `path.join` 拼接路径，在 Windows 上会产出反斜杠路径，手写正斜杠键会导致 ENOENT 误判。
+- 用法：`node scripts/sync-engine-docs.mjs [--check] [--json] [--root <dir>]`；无漂移 exit 0，有漂移（含 warning）exit 非 0；`--json` 输出机器可读结构。
+
+### 14.7 已知残余范围限制（未做项，非遗漏）
+- 只读校验，不自动改写文档；发现的缺项由人工/主 agent 判断是否补齐，脚本本身不写文件。
+- 路由/环境开关的比对范围限定在 `docs/CC-HYBRID.md`；`docs/dsh-web-relay-说明书.md` 等其他文档虽然也记载了部分路由，但未纳入本校验器比对范围（任务契约明确指定比对文档，未扩大范围）。
+- 版本锚点比对限定在 `README.md`/`docs/COMPATIBILITY.md`，不校验其余文档（如更新日志类文档）里的历史版本号提及。
