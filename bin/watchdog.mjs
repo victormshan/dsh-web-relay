@@ -32,6 +32,19 @@ export const CFG = {
   // 判定重启 37 次，主 agent 回合被反复打断）。6 次 ≈ 30s 连续失联才动手，仍能兜住真挂。
   missN: Math.floor(num(process.env.DSH_WEB_MISS_N, 6)),
   restartDelayMs: num(process.env.DSH_WEB_RESTART_DELAY_MS, 2000),
+  // v4.9.10（EADDRINUSE 死循环修复）: 重启时不再「固定 2s 后盲 spawn」，改为**等端口真正释放**。
+  // 根因（2026-09-15 实测事故）：doRestart 杀掉旧 PID 后固定 restartDelayMs 就 spawn 新宿主，
+  // 但旧宿主的 3080 监听未必已释放（TIME_WAIT、慢销毁、或占用者是 taskkill 杀不掉的外来进程，
+  // 如另一套 node 安装手工起的 dsh web）。此时新宿主 boot 期即 EADDRINUSE 失败退出
+  // （报 "plugin tree failed to load ... listen EADDRINUSE"）→ child.on('exit') 又触发重拉
+  // → 「重拉→失败→再重拉」死循环；每次重拉还多开一个浏览器 tab。用户观感即「页面不动了 +
+  // tab 一直冒出来」，最终只能手工重启。现改为：轮询端口直到空出才 spawn；超时仍被占则
+  // **本次拒绝 spawn**（宁可不拉起也不制造死循环），交给后续 tick 与防风暴门处理。
+  portFreeWaitMs: num(process.env.DSH_WEB_PORT_FREE_WAIT_MS, 15000),
+  portFreePollMs: num(process.env.DSH_WEB_PORT_FREE_POLL_MS, 500),
+  // v4.9.10: 见 hostArgv() 的说明——两个参数必须固化到自愈路径，否则与手工启动不一致。
+  noOpen: process.env.DSH_WEB_NO_OPEN !== '0',
+  trustedHost: (process.env.DSH_WEB_TRUSTED_HOST || 'win10-dt.taile618c2.ts.net').trim(),
   maxRestarts: Math.floor(num(process.env.DSH_WEB_MAX_RESTARTS, 3)),
   windowMs: num(process.env.DSH_WEB_WINDOW_MS, 10 * 60 * 1000),
   pauseMs: num(process.env.DSH_WEB_PAUSE_MS, 10 * 60 * 1000),
@@ -82,6 +95,15 @@ export function stormGate(restartTimes, { now = Date.now(), max = CFG.maxRestart
 }
 export function classifyProbe({ httpOk, okFlag } = {}) { return httpOk === true && okFlag === true }
 export function decideRestart({ missCount, missN = CFG.missN } = {}) { return missCount >= missN }
+/**
+ * v4.9.10（纯函数，可单测）：spawn 前是否该继续等端口释放。
+ * @returns {'spawn'|'wait'|'refuse'} 端口已空 → spawn；仍被占且未超时 → wait；
+ *   仍被占且已超时 → refuse（拒绝本次 spawn，避免 EADDRINUSE 死循环 + 每次多开一个 tab）。
+ */
+export function decidePortWait({ holder, elapsedMs, waitMs }) {
+  if (holder === null || holder === undefined || holder === '' || holder === 0) return 'spawn'
+  return Number(elapsedMs) >= Number(waitMs) ? 'refuse' : 'wait'
+}
 // 重启尝试门：先判防风暴再记录（暂停期不累计，避免次数无限膨胀）
 export function attemptRestart(restartTimes, { now = Date.now(), max = CFG.maxRestarts, windowMs = CFG.windowMs, pauseMs = CFG.pauseMs } = {}) {
   const gate = stormGate(restartTimes, { now, max, windowMs, pauseMs })
@@ -101,6 +123,15 @@ export function hostArgv() {
   if (CFG.webCmd) return parseCommand(CFG.webCmd)
   const base = [CFG.webBin]
   if (CFG.webArgs) base.push(...parseCommand(CFG.webArgs))
+  // v4.9.10（tab 泛滥修复）: 固化两个宿主必需参数——此前两者都只存在于手工启动的命令行，
+  // watchdog 拉起的宿主两者皆无，于是「自愈重拉」这条路径与手工启动行为不一致。
+  // ① --no-open：dsh web 默认会打开浏览器（实测日志 "dsh web: opening the default browser;
+  //    pass --no-open to disable"）。watchdog 每次重拉都再开一个 tab → 重拉风暴时 tab 泛滥
+  //    （2026-09-11 曾单日拉起宿主 18 次 = 18 个 tab）。守卫式追加，DSH_WEB_NO_OPEN=0 可关闭。
+  // ② --trusted-host：经 tailscale 域名/手机访问 GUI 所必需（dsh-web-app 的 webCommand 解析
+  //    --host/--port/--trusted-host/--no-open）。DSH_WEB_TRUSTED_HOST 可覆盖。
+  if (CFG.noOpen && !base.includes('--no-open')) base.push('--no-open')
+  if (CFG.trustedHost && !base.includes('--trusted-host')) base.push('--trusted-host', CFG.trustedHost)
   return base
 }
 
@@ -246,7 +277,36 @@ function doRestart() {
   if (child) { killPidTree(child.pid); child = null }
   const pid = findPortPid()
   if (pid) { log(`树杀旧宿主 PID=${pid}`); killPidTree(pid) }
-  setTimeout(spawnHost, CFG.restartDelayMs)
+  // v4.9.10: 原为 setTimeout(spawnHost, CFG.restartDelayMs) —— 盲等固定 2s 即 spawn，
+  // 未确认 3080 已释放 → 新宿主 EADDRINUSE 即退 → 重拉死循环 + tab 泛滥（详见 CFG.portFreeWaitMs）。
+  scheduleSpawnAfterPortFree()
+}
+
+/**
+ * v4.9.10：等端口真正释放后再 spawn 宿主。
+ * 轮询 findPortPid()（Windows: netstat -ano LISTENING，不做 TIME_WAIT 判定）直到为空；
+ * 超过 CFG.portFreeWaitMs 仍被占用则**拒绝本次 spawn** 并记录占用 PID——宁可暂不拉宿主，
+ * 也不要制造「拉起来就 EADDRINUSE 退出」的死循环（每次循环都会多开一个浏览器 tab）。
+ */
+function scheduleSpawnAfterPortFree() {
+  const deadline = Date.now() + CFG.portFreeWaitMs
+  const step = () => {
+    const holder = findPortPid()
+    const decision = decidePortWait({ holder, elapsedMs: CFG.portFreeWaitMs - Math.max(0, deadline - Date.now()), waitMs: CFG.portFreeWaitMs })
+    if (decision === 'spawn') {
+      const waited = CFG.portFreeWaitMs - Math.max(0, deadline - Date.now())
+      if (waited > CFG.portFreePollMs) log(`端口 ${CFG.port} 已释放（等待 ${Math.round(waited)}ms）→ 拉起宿主`)
+      spawnHost()
+      return
+    }
+    if (decision === 'refuse') {
+      log(`端口 ${CFG.port} 等待 ${CFG.portFreeWaitMs}ms 后仍被 PID=${holder} 占用 → 本次不 spawn（避免 EADDRINUSE 死循环与 tab 泛滥）；交由后续 tick 与防风暴门处理`)
+      setTimeout(() => { if (!child) tick() }, CFG.checkMs)
+      return
+    }
+    setTimeout(step, CFG.portFreePollMs)
+  }
+  setTimeout(step, Math.min(CFG.restartDelayMs, CFG.portFreePollMs))
 }
 
 async function tick() {

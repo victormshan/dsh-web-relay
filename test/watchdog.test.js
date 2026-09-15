@@ -2,7 +2,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
-import { stormGate, classifyProbe, decideRestart, parseCommand, hostArgv, attemptRestart, parseRegValue, childEnv, parseLock, bridgeDecision, CFG } from '../bin/watchdog.mjs'
+import { stormGate, classifyProbe, decideRestart, parseCommand, hostArgv, attemptRestart, parseRegValue, childEnv, parseLock, bridgeDecision, decidePortWait, CFG } from '../bin/watchdog.mjs'
 
 test('classifyProbe：HTTP200 且 body.ok===true 才算存活', () => {
   assert.equal(classifyProbe({ httpOk: true, okFlag: true }), true)
@@ -61,6 +61,36 @@ test('hostArgv：DSH_WEB_CMD 优先，否则 bin + args', () => {
   const argv = hostArgv()
   assert.ok(Array.isArray(argv) && argv.length >= 1)
   assert.ok(argv.every((a) => typeof a === 'string' && a.length > 0))
+})
+
+// v4.9.10: 自愈拉起路径必须固化 --no-open / --trusted-host（2026-09-15 事故：
+// 每次重拉都新开一个浏览器 tab；且 watchdog 拉起的宿主缺 --trusted-host，
+// 与手工启动的宿主行为不一致，tailscale/手机访问受影响）。
+test('hostArgv：固化 --no-open 与 --trusted-host（自愈路径与手工启动一致）', () => {
+  const argv = hostArgv()
+  assert.ok(argv.includes('--no-open'), '应含 --no-open（否则每次重拉开新 tab）')
+  assert.ok(argv.includes('--trusted-host'), '应含 --trusted-host')
+  assert.equal(argv[argv.indexOf('--trusted-host') + 1], CFG.trustedHost)
+  assert.equal(argv.filter((a) => a === '--no-open').length, 1, '不应重复追加')
+})
+
+test('hostArgv：DSH_WEB_ARGS 已含该参数时不重复追加', () => {
+  const orig = CFG.webArgs
+  try {
+    CFG.webArgs = 'web --no-open --trusted-host example.ts.net'
+    const argv = hostArgv()
+    assert.equal(argv.filter((a) => a === '--no-open').length, 1)
+    assert.equal(argv.filter((a) => a === '--trusted-host').length, 1)
+  } finally { CFG.webArgs = orig }
+})
+
+// v4.9.10: 端口释放等待决策（防 EADDRINUSE 死循环 + tab 泛滥）
+test('decidePortWait：端口空→spawn；仍占用未超时→wait；超时仍占用→refuse', () => {
+  assert.equal(decidePortWait({ holder: null, elapsedMs: 0, waitMs: 15000 }), 'spawn')
+  assert.equal(decidePortWait({ holder: 7164, elapsedMs: 0, waitMs: 15000 }), 'wait')
+  assert.equal(decidePortWait({ holder: 7164, elapsedMs: 14999, waitMs: 15000 }), 'wait')
+  assert.equal(decidePortWait({ holder: 7164, elapsedMs: 15000, waitMs: 15000 }), 'refuse')
+  assert.equal(decidePortWait({ holder: 7164, elapsedMs: 60000, waitMs: 15000 }), 'refuse')
 })
 
 test('source 契约：watchdog 探测端点/拉起命令与 S1 spec 一致', () => {
