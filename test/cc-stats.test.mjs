@@ -49,6 +49,16 @@ test('classifyCcFailure: runner-failed 归类（exit≠0）', () => {
   assert.equal(r.category, 'runner-failed');
 });
 
+test('classifyCcFailure: cc-marker-missing 归类（不是 runner-failed，即使 reason 含 done.flag missing 文本）', () => {
+  const r = classifyCcFailure('cc-marker-missing: claude exit=0; done.flag=missing');
+  assert.equal(r.category, 'cc-marker-missing');
+});
+
+test('classifyCcFailure（反向回归）: reason 无 cc-marker-missing 字面量，仅 "claude exit≠0，done.flag missing" → 仍为 runner-failed', () => {
+  const r = classifyCcFailure('claude exit≠0，done.flag missing');
+  assert.equal(r.category, 'runner-failed');
+});
+
 test('classifyCcFailure: runner-failed 归类（v2-validate-failed）', () => {
   const r = classifyCcFailure('runner.sh: v2-validate-failed on task.json');
   assert.equal(r.category, 'runner-failed');

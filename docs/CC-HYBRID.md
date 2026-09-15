@@ -186,6 +186,12 @@ curl -X POST http://127.0.0.1:3080/dsh-web-relay/route/decide -H 'content-type: 
 
 **已在后续任务 ccfix-20260914-stats 补齐**：`lib/cc-stats.mjs` 的 `FAILURE_RULES` 新增 `cc-quota-exhausted`/`cc-permission-denied`/`cc-timeout` 三个分类桶（排在通用 `timeout` 规则之前，命名与 §10.3 `classifyCcFailure` 消费的 `result.json.errorCode` 取值一致），`byFailure` 现可单列「配额耗尽 N 次」「权限被拒 N 次」供 `/health-check` 直接查看。
 
+### 10.5 cc-marker-missing：区分「代码写坏了」与「只是没写完成标记」（ccfix-20260915-markermissing）
+- 背景：runner.sh 新增失败分类 `cc-marker-missing`，判据为 claude 退出码 0、未写完成标记 `done.flag`，但确有产出（`out/` 非空或目标仓库工作树有改动）。实测两次该情形（v1-2 提交 `c4b3125`、ccfix-20260915-swarmparse 提交 `947fd3e`）产物均完好、独立验收均 ACCEPT（7/7），却都被记成 `cc-failed`——即该分类下假阴性率此前为 100%。两类动作完全不同：真失败应重试/降级，标记缺失应人工核验产物，不得直接重跑（避免浪费稀缺 cc 额度）。
+- `lib/cc-channel.js` `classifyCcFailure`：`errorCode === 'cc-marker-missing'` 时返回 `kind: 'marker-missing'`（`resetsAt: null`）。**该判定必须排在 isCodeFailed 分支之前**——`cc-marker-missing` 的 `result.json` 里 `status` 同样是 `"failed"`，会被 isCodeFailed 分支的兜底条件 `result.status === 'failed'` 先命中，见 `lib/cc-channel.js` 的 `classifyCcFailure` 实现。
+- `lib/cc-stats.mjs` `FAILURE_RULES`：新增 `['cc-marker-missing', /cc-marker-missing/i]`，**排在 `runner-failed` 规则之前**——`cc-marker-missing` 的 reason 文本是 `"claude exit=0; done.flag=missing"`，会命中 `runner-failed` 正则里的 `done\.flag\s*(missing|不存在|缺失)` 子模式。
+- 不改变既有分类行为：无 `errorCode` 的普通失败、配额/权限/超时/`contract-reject`/`artifact-missing`/`timeout-still-running`/`cc-watchdog-stale` 的既有归类保持不变（见 `test/cc-channel.test.js`/`test/cc-stats.test.mjs` 的反向回归用例）。
+
 ## 11. AutoIteration 声明契约完整性（半状态可见化）+ /ask 注入机器生成能力清单（v1-2-autoiter-decl-integrity）
 
 ### 11.1 可行性审计结论（第 0 步，动手前先取证）

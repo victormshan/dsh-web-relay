@@ -606,6 +606,34 @@ test('classifyCcFailure：result/claudeLogText 均缺失 → kind=unknown，不�
   assert.equal(r.resetsAt, null);
 });
 
+test('classifyCcFailure：errorCode=cc-marker-missing 且 status=failed → kind=marker-missing（不是 code-failed，且判定排在 isCodeFailed 之前）', () => {
+  const r = classifyCcFailure({
+    result: { status: 'failed', exit: 0, errorCode: 'cc-marker-missing', reason: 'claude exit=0; done.flag=missing' },
+    claudeLogText: '',
+  });
+  assert.equal(r.kind, 'marker-missing');
+  assert.equal(r.errorCode, 'cc-marker-missing');
+  assert.equal(r.resetsAt, null);
+});
+
+test('classifyCcFailure：errorCode=cc-marker-missing 且 claudeLogText 含 done.flag=missing 文本 → 仍为 marker-missing（不被 code-failed 兜底吞掉）', () => {
+  const r = classifyCcFailure({
+    result: { status: 'failed', exit: 0, errorCode: 'cc-marker-missing' },
+    claudeLogText: 'claude exit=0; done.flag=missing, but out/ 非空',
+  });
+  assert.equal(r.kind, 'marker-missing');
+  assert.equal(r.errorCode, 'cc-marker-missing');
+});
+
+test('classifyCcFailure（反向回归）：无 errorCode 但 status=failed → 仍为 code-failed（证明 marker-missing 分支未吞掉旧行为）', () => {
+  const r = classifyCcFailure({
+    result: { status: 'failed', exit: 1 },
+    claudeLogText: '',
+  });
+  assert.equal(r.kind, 'code-failed');
+  assert.equal(r.errorCode, null);
+});
+
 test('shouldSkipForKnownQuotaExhaustion：已知配额耗尽且 now < resetsAt → true（应跳过派发）', () => {
   const now = 1_000_000_000;
   const skip = shouldSkipForKnownQuotaExhaustion({
