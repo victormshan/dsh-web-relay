@@ -183,8 +183,15 @@ node "D:\dsh relay test\protocol-close-step.mjs" 7 --evidence-file "D:\dsh relay
 但 relay 侧的新行为（如 `/health-check` 的 `ccWatchdogWarning`、突破度门禁、`/ask` 审计注入）只有重启后才生效。
 
 ```powershell
-# 1) 三副本同步（改动文件逐个哈希比对；docs/lib/package.json 均需同步）
-#    目标：profiles\web\node_modules\dsh-web-relay、D:\DSH\dsh-web-relay、D:\dsh-web-relay-standalone
+# 1) 三副本交付（对 package.json files 清单逐个 sha256 比对并**覆盖**；含 package.json 自身）
+#    目标：profiles\web\node_modules\dsh-web-relay（宿主按 cordis.patch.yml 以 name 挂载，**实际加载的就是这份**）、
+#          D:\DSH\dsh-web-relay、D:\dsh-web-relay-standalone
+node "D:\dsh relay test\deliver-three-copies.mjs"           # DRY-RUN：先看每个目标将更新哪些文件
+node "D:\dsh relay test\deliver-three-copies.mjs" --apply   # 覆盖写入（旧文件先备份到 <目标>\.dsh-relay-backup-<ts>\，并回读校验）
+#    ⚠ 不要用 sync-install-carrier.mjs 当交付工具：它**只补齐缺失文件，对已存在但内容不同的文件只报告不覆盖**
+#      （见其 L46-56）→ 能加新文件，却永远送不出对既有文件的修改。2026-09-15 实测踩中：运行时副本已含
+#      V3-1 新增脚本（缺失→被补齐），但 lib/index.js / lib/swarm-prompts.js 等被修改的既有文件一直是旧的
+#      ——「交付看似已同步、新行为其实没上线」，直到宿主重启后才可能被发现。
 
 # 2) 请求重启（只写请求文件后立即返回——由独立进程树的 watchdog 执行，避免工具进程自杀）
 node "D:\dsh-web-relay\bin\watchdog.mjs" request-restart 5
