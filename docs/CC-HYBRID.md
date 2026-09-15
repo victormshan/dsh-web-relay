@@ -244,3 +244,37 @@ curl -X POST http://127.0.0.1:3080/dsh-web-relay/route/decide -H 'content-type: 
 - 未将 `collectRejectedCases` 从「仅 finalize 收口」扩展为「单步被打回即时入库」（任务验收②可选项）：现有 finalize 收口已覆盖「曾被 rejected 后 approved」与「仍 rejected」两类（v3.5.0 P1 修复），即时入库需要在 `executeHandler` 打回分支新增写路径，改动面会扩大到本任务写入范围以外的执行链路，且需重新评估幂等键在高并发打回下的竞态，风险高于收益，故不做。
 - 未新建第二套案例存储（严格遵循任务边界，继续用 `experiments/prompt-case-library.md` 单一数据源）。
 - 未引入新依赖，未改动审核侧 `buildReviewPrompt`/`buildCaseBlock` 既有调用点行为（仅内部实现改为委托新模块，输出字节等价）。
+
+## 13. 版间门×突破度联动：连续 Incremental 阻止进入下一版（v2-2-versiongate-breakthrough）
+
+### 13.1 可行性审计结论（第 0 步，动手前先取证）
+- 版间门判定位于 `lib/index.js`（`wakeAfterApproved` 内 `status === 'done'` 分支，v1.9 AutoIteration）：`updated.iterations > 1 && (updated.currentIteration || 1) < updated.iterations` 为真即无条件 `currentIteration += 1` 并落盘、组装唤醒文案；改动前该分支**没有**读取 `incrementalStreak`，即连续 Incremental 版本可无障碍地一路推进到迭代上限。
+- `evaluateBreakthroughPlan`（V1-1 产物，`lib/breakthrough-gate.js`）与 `auditBreakthrough`（P3 产物）均已存在且已接入 `restructure` 端点（硬门禁，400 拦截）与 `askHandler`（审计+落盘，非阻断）；本任务复用二者的类型识别能力（`versionTypeOf`），不重写。
+- `versionTypeOf` 既有语义：全部 step 的 `breakthrough_type` 均为 `unknown`/`null`（未声明）时返回 `null`——即"不计不重置"，防止把"未声明"误判为"连续 Incremental"。
+- `writeStepState`（`lib/index.js`）的写白名单已含 `incrementalStreak`（P3-fix 注释：不落盘则跨 restructure 不累积、门禁永不触发），确认写路径存在，只需补齐新字段。
+- `test/breakthrough-gate.test.js` 改动前 20 个用例，覆盖 `breakthroughTypeOf`/`versionTypeOf`/`auditBreakthrough`/`evaluateBreakthroughPlan` 全部既有语义与两条声明可达性回归。
+
+### 13.2 新增纯函数：`evaluateVersionAdvance`（`lib/breakthrough-gate.js`）
+签名：`evaluateVersionAdvance({ steps, state, max })` → `{ advance, verdict, consecutiveIncremental, requiredType, reasons, handoffNote }`，`verdict` 取值 `'advance' | 'blocked-needs-breakthrough' | 'final-iteration' | 'single-iteration'`。
+- 复用 `versionTypeOf`（既有类型识别，不重复实现）：仅当"当前版本 `steps` 含 structural/paradigm"时把 `consecutiveIncremental` 归零；否则直接沿用调用方传入的 `state.incrementalStreak`——不对同一版本的类型效应二次累加（该效应已在版本创建/`restructure` 时由 `auditBreakthrough`/`evaluateBreakthroughPlan` 计入并落盘，版间门决策时再次相加会造成同一版本重复计数）。
+- `max` 优先取显式入参；调用方（`lib/index.js`）负责读取 `DSH_RELAY_BREAKTHROUGH_MAX_INCREMENTAL`（默认 3）后传入——函数体内不读环境变量、不做 IO、不调用 `Date`，历史 streak 通过 `state.incrementalStreak` 注入，全部可测。
+- 优先级：`iterations<=1` → `single-iteration`；`currentIteration>=iterations` → `final-iteration`（均 `advance=true`，保持既有收口/单版行为不变）；否则按连增数与 `max` 比较，超限返回 `blocked-needs-breakthrough`（`advance=false`，`requiredType='structural'`，`handoffNote` 显式要求下一版含 structural/paradigm）。
+
+### 13.3 接入版间门（`lib/index.js`，`status==='done'` 分支）
+- `advance=true`（含 `final-iteration`/`single-iteration`）：原有 `currentIteration` 推进与 `handoffText` 组装代码逐字保留，零变化。
+- `advance=false`：不推进 `currentIteration`（保持原值），落盘审计字段 `breakthroughBlocked: { at, consecutiveIncremental, requiredType, reasons }`，`handoffText` 改用 `gateDecision.handoffNote` 明确要求下一版含 structural/paradigm 并附 `reasons`；不改 `expr`/`step` 状态为 `paused`/`rejected`（区别于打回熔断语义）；沿用既有共用 `appendTrace(role='mainagent')` 留痕（三分支共享同一段 `appendTrace` 调用，未新增重复调用）。
+- 白名单（本仓库高危点，读+写两处均需覆盖，否则字段写盘即丢或读不回来——同 v3.8 Step3-fix 教训）：
+  - 写白名单：`lib/index.js`「`breakthroughBlocked: state.breakthroughBlocked || null,`」，紧邻注释「V2-2: 版间门×突破度联动——阻断判定审计字段纳入写白名单（v3.8 Step3-fix 同类教训：漏加写白名单会导致字段写盘即丢，面板/审计永远读到 null）」。
+  - 读白名单：`lib/index.js`「`breakthroughBlocked: data.breakthroughBlocked || null }`」，紧邻注释「V2-2: 版间门×突破度联动——阻断判定审计字段纳入读白名单（同 v3.8 Step3-fix 教训：若只加写白名单、漏加读白名单，字段落盘却读不回来，面板/幂等判定会读到 undefined）」。
+  - `readStepState`/`writeStepState` 的"无状态/默认"回退对象也同步补 `breakthroughBlocked: null`，与既有字段（如 `autoIterDeclAudit`）保持同一模式。
+
+### 13.4 幂等与可恢复
+同一 `exprId` 重复触发版间门（未发生新的 `restructure`）时，`updated.currentIteration`/`updated.incrementalStreak` 不变，`evaluateVersionAdvance` 对相同入参返回相同结果（无副作用），不会重复推进或重复阻断。主 agent 通过 `restructure` 提交含 structural/paradigm 的新版 `newSteps` 后，`evaluateBreakthroughPlan`/`auditBreakthrough` 会把落盘的 `incrementalStreak` 归零，下次版间门决策时 `evaluateVersionAdvance` 随之 `advance=true`，恢复正常推进。
+
+### 13.5 测试
+`test/breakthrough-gate.test.js` 新增 11 个用例（原 20 个全部保留未改）：阈值触发（`advance=false`/`requiredType='structural'`/`handoffNote` 含 Incremental/Structural/Paradigm 关键词）、本版含 structural 时 `advance=true` 且 streak 归零（即使落盘 streak 已超阈值）、历史为空放行、全 unknown/null 不触发额外拦截、达到 iterations 上限 `verdict='final-iteration'`、单版任务 `verdict='single-iteration'`、`reasons` 含可读依据（连增次数与阈值文案）、`max` 显式入参覆盖默认阈值、同入参重复调用结果一致（幂等）、接入点 source 标记回归（调用点+两处白名单同时存在）。全量回归 `node --test --test-reporter=tap $(ls test/*.test.js test/*.test.mjs)` 509 个用例，506 通过、3 个失败（`shadow-gate.test.js` 的 `TC-Green`/`TC-GC`/`getGitHead`）与本次改动无关——`git stash` 验证改动前同样失败（本机 WSL 路径与用例硬编码的 `D:/DSH` Windows 路径/仓库 HEAD 期望不匹配的既有环境问题，同 12.4 记录的问题）。
+
+### 13.6 已知残余范围限制（未做项，非遗漏）
+- 未改动 `restructure` 端点既有的 `evaluateBreakthroughPlan` 硬门禁（400 拦截）与其响应结构，两处门禁（`restructure` 提交时 / 版间门推进时）职责不同：前者拦截"提交一个仍不达标的新计划"，后者拦截"在未补突破项前就推进版本号"，二者互补而非重复。
+- 未改变 `rejectStreak`/`paused` 熔断语义：`breakthroughBlocked` 只是"暂不推进版本号 + 要求补突破项"，不等价于打回或暂停，不清空 `activeSteps`、不改 `step.status`。
+- 未对 `breakthroughBlocked` 字段做历史清理（一旦阻断发生，字段会一直保留到下次成功推进版本号时被新的写入覆盖）；面板展示/清理策略超出本任务写入范围。

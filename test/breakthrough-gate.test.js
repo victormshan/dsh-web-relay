@@ -3,7 +3,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
-import { breakthroughTypeOf, versionTypeOf, auditBreakthrough, evaluateBreakthroughPlan } from '../lib/breakthrough-gate.js'
+import { breakthroughTypeOf, versionTypeOf, auditBreakthrough, evaluateBreakthroughPlan, evaluateVersionAdvance } from '../lib/breakthrough-gate.js'
 
 test('breakthroughTypeOf：识别三种类型与来源字段（顶层/architect_vision）', () => {
   assert.equal(breakthroughTypeOf({ breakthrough_type: 'Incremental' }), 'incremental')
@@ -189,4 +189,111 @@ test('/ask 绕过路径已堵上：askHandler 对 parsedSteps 执行 auditBreakt
   const src = fs.readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8')
   assert.ok(src.includes('askBreakthrough = auditBreakthrough(parsedSteps, 0)'))
   assert.ok(src.includes('incrementalStreak: askBreakthrough.streak'))
+})
+
+// ---- V2-2: evaluateVersionAdvance 版间门×突破度联动（纯函数，无 IO/无网络） ----
+
+test('evaluateVersionAdvance：连续 Incremental 达上限 → advance=false，requiredType=structural，handoffNote 含关键词', () => {
+  const r = evaluateVersionAdvance({
+    steps: [{ title: '无声明的收尾步骤' }],
+    state: { iterations: 5, currentIteration: 2, incrementalStreak: 3 },
+    max: 3
+  })
+  assert.equal(r.advance, false)
+  assert.equal(r.verdict, 'blocked-needs-breakthrough')
+  assert.equal(r.requiredType, 'structural')
+  assert.equal(r.consecutiveIncremental, 3)
+  assert.ok(r.handoffNote.includes('structural') || r.handoffNote.includes('Structural'))
+  assert.ok(r.handoffNote.includes('paradigm') || r.handoffNote.includes('Paradigm'))
+  assert.ok(r.handoffNote.includes('连续 Incremental') || r.handoffNote.includes('Incremental'))
+})
+
+test('evaluateVersionAdvance：本版含 structural → advance=true，streak 归零（即使落盘 streak 已超阈值）', () => {
+  const r = evaluateVersionAdvance({
+    steps: [{ breakthrough_type: 'structural' }],
+    state: { iterations: 5, currentIteration: 2, incrementalStreak: 5 },
+    max: 3
+  })
+  assert.equal(r.advance, true)
+  assert.equal(r.verdict, 'advance')
+  assert.equal(r.consecutiveIncremental, 0)
+  assert.equal(r.requiredType, null)
+  assert.equal(r.handoffNote, null)
+})
+
+test('evaluateVersionAdvance：历史为空（incrementalStreak=0）→ 放行推进', () => {
+  const r = evaluateVersionAdvance({
+    steps: [{ title: '首版探路' }],
+    state: { iterations: 3, currentIteration: 1, incrementalStreak: 0 },
+    max: 3
+  })
+  assert.equal(r.advance, true)
+  assert.equal(r.verdict, 'advance')
+  assert.equal(r.consecutiveIncremental, 0)
+})
+
+test('evaluateVersionAdvance：全 unknown/null steps 不触发额外拦截（沿用落盘 streak，未过阈值即放行）', () => {
+  const r = evaluateVersionAdvance({
+    steps: [{ title: '无声明' }, { breakthrough_type: null }],
+    state: { iterations: 4, currentIteration: 2, incrementalStreak: 1 },
+    max: 3
+  })
+  assert.equal(r.advance, true)
+  assert.equal(r.consecutiveIncremental, 1)
+  assert.equal(r.requiredType, null)
+})
+
+test('evaluateVersionAdvance：达到 iterations 上限 → verdict=final-iteration 且 advance=true（收口行为不变，忽略 streak）', () => {
+  const r = evaluateVersionAdvance({
+    steps: [{ title: '无声明' }],
+    state: { iterations: 3, currentIteration: 3, incrementalStreak: 9 },
+    max: 3
+  })
+  assert.equal(r.advance, true)
+  assert.equal(r.verdict, 'final-iteration')
+  assert.equal(r.requiredType, null)
+  assert.deepEqual(r.reasons, [])
+})
+
+test('evaluateVersionAdvance：iterations<=1（单版任务）→ verdict=single-iteration 且 advance=true', () => {
+  const r = evaluateVersionAdvance({
+    steps: [{ title: '无声明' }],
+    state: { iterations: 1, currentIteration: 1, incrementalStreak: 9 },
+    max: 3
+  })
+  assert.equal(r.advance, true)
+  assert.equal(r.verdict, 'single-iteration')
+})
+
+test('evaluateVersionAdvance：reasons 含可读依据（连增次数与阈值均可读）', () => {
+  const r = evaluateVersionAdvance({
+    steps: [{ title: '无声明' }],
+    state: { iterations: 5, currentIteration: 1, incrementalStreak: 3 },
+    max: 3
+  })
+  assert.equal(r.advance, false)
+  assert.ok(r.reasons.some((x) => x.includes('3')))
+  assert.ok(r.reasons.some((x) => x.includes('DSH_RELAY_BREAKTHROUGH_MAX_INCREMENTAL')))
+})
+
+test('evaluateVersionAdvance：max 显式入参可覆盖默认阈值（不读 env，纯函数注入）', () => {
+  const blocked = evaluateVersionAdvance({ steps: [], state: { iterations: 5, currentIteration: 1, incrementalStreak: 2 }, max: 2 })
+  assert.equal(blocked.advance, false)
+  const passed = evaluateVersionAdvance({ steps: [], state: { iterations: 5, currentIteration: 1, incrementalStreak: 2 }, max: 3 })
+  assert.equal(passed.advance, true)
+})
+
+test('evaluateVersionAdvance：同一 state 重复调用结果一致（幂等，不产生副作用）', () => {
+  const input = { steps: [{ title: 'x' }], state: { iterations: 5, currentIteration: 2, incrementalStreak: 3 }, max: 3 }
+  const r1 = evaluateVersionAdvance(input)
+  const r2 = evaluateVersionAdvance(input)
+  assert.deepEqual(r1, r2)
+})
+
+test('版间门接入点：lib/index.js 在 status===done 分支调用 evaluateVersionAdvance，且 blocked 分支落盘 breakthroughBlocked 并保持 currentIteration 不变', () => {
+  const src = fs.readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8')
+  assert.ok(src.includes('evaluateVersionAdvance({ steps: updated.steps, state: updated, max: btMax })'))
+  assert.ok(src.includes('updated.breakthroughBlocked = {'))
+  assert.ok(src.includes('breakthroughBlocked: data.breakthroughBlocked || null'))
+  assert.ok(src.includes('breakthroughBlocked: state.breakthroughBlocked || null'))
 })
