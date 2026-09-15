@@ -156,6 +156,7 @@ node "D:\dsh relay test\protocol-close-step.mjs" 7 --evidence-file "D:\dsh relay
 | `cc-timeout` | `timeout 900` 硬超时 | 拆小任务或提高上限 |
 | `cc-failed` | 其他执行失败 | 看 `claude.log` |
 | `v2-validate-failed` | 产物未过 v2 契约校验 | 按校验输出修产物 |
+| `cc-marker-missing` | claude 退出 0、但未写完成标记 `done.flag`，且**确有产出**（`out/` 非空或仓库工作树有改动） | **不得直接重跑**：先 `git status --porcelain` + `verify-cc-task` 按**产物**判定（实测 2/2 产物完好、独立验收 ACCEPT；见 L-2026-0915-070）。与 `cc-failed` 区分开，正是为了「真写坏代码→重试/降级」vs「只是没写标记→人工核验产物」两种不同动作 |
 
 ## 6. 已知边界（不要假装已解决）
 
@@ -165,6 +166,16 @@ node "D:\dsh relay test\protocol-close-step.mjs" 7 --evidence-file "D:\dsh relay
 - **额度与交互式使用共享**：同一订阅池，额度耗尽时链条只能等窗口重置（无法绕过）。
 - **链条不覆盖**：协议审核/approve、版间门评估、`finalAcceptance` 声明、三版端到端终验——这些必须由主 agent 执行。
 - **审计盲点**：机械验收只证明「范围/语法/测试/覆盖/编码」，不证明「实现是否符合意图」；意图层仍需审核环节。
+- **测试环境两侧不同（关键）**：cc（headless claude）在 **WSL** `/mnt/d/dsh-web-relay` 跑测试，而验收器
+  `verify-cc-task.mjs` 在 **Windows** 跑同一份文件。实测同一提交、同为 390 例 `*.test.js` 子集：
+  **WSL 3 失败 / Windows 0 失败**，失败恒为 `test/shadow-gate.test.js` 的三项
+  （`TC-Green` / `TC-GC` / `getGitHead`，涉 git + drvfs 行为）。因此：
+  ① cc 自述的「3 个既有失败」在 WSL **精确成立**，不要用 Windows 的绿色去否定它（L-2026-0915-069）；
+  ② **写规格时不要把「全量测试 0 失败」写成硬性验收条**——cc 在 WSL 永远达不到，会诱导它反复做
+  `git stash` 自证（已发生 2 次）甚至去「修」不存在的缺陷；正确表述是「排除 `test/shadow-gate.test.js`
+  后 0 失败，Windows 侧全量口径由主 agent 验收」；
+  ③ 判定是否本次引入，用「失败清单是否与自述一致」＋「本次改动文件是否可能影响这些用例」两条，
+  而非跨环境数字对比。
 
 ## 7. 宿主重启（让插件 lib/ 新代码在运行中生效）
 
