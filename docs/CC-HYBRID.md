@@ -469,4 +469,35 @@ unknown 处置流程（文字流程图）：
 ### 16.6 已知残余范围限制（未做项，非遗漏）
 - 外部重回归默认不跑：`DSH_RELAY_SELFCHECK_CMD` 需要显式设置才启用。理由是本钩子在 boot 路径上执行，任何默认开启的外部命令都会成为「boot 必经的额外耗时/额外失败面」，与「boot 绝不能被自检拖慢/拖垮」的硬约束冲突；把它做成 opt-in，让运维方（或主 agent 自身的部署脚本）按需在自己可控的环境里接上（例如主 agent 的 `regression-post-restart.mjs`），而不是让 relay 自身对外部脚本的存在与退出码语义做假设。
 - 路由契约自检的 `requiredRoutes`/`requiredHealthFields` 是当前已知的关键子集（非全量自动派生自 `webServer.register` 调用），随功能演进需要人工同步维护（与 §14 的 `sync-engine-docs.mjs` 面对的维护成本是同一类问题）。
+
+## 17. 心跳自查新增 unclaimed-pending 信号：可执行但无人认领的待办步骤（ccfeat-20260915-unclaimed）
+
+### 17.1 真实事故回顾
+2026-09-15 实测：某计划 Step 7 处于「pending 且依赖（step 6）已 approved」的可执行状态，但链条的 `items` 只覆盖 planStepId 1/2/4/5/6，根本不包含 step 7；跑完 V3-1 后整条管线静默结束，轨迹在 `2026-09-15T01:50:26Z → 11:47:42Z` 之间零条目，白等 9 小时 57 分，最后靠人工发现才继续。根因：`lib/heartbeat-scan.js` 原有 5 个信号（`resume-circuit-paused` / `review-pending` / `rejected-pending` / `executing-stale` / `finalize-pending`）没有一个能匹配「可执行但没人认领」这一状态——心跳每轮扫描都「无待办可报」，属合法静默。
+
+### 17.2 新信号：unclaimed-pending
+`scanExprSignals`（`lib/heartbeat-scan.js`）新增第 ⑥ 个信号，判据（全部满足才 push）：
+1. 该 expr 已通过既有 archived（第 25-26 行）与 maxAgeMs（第 28-31 行）两道前置守卫，即仍属活跃；
+2. 存在步骤 `s`：`s.status === 'pending'` 且其 `depends_on` 中每一项对应的步骤都是 `approved`（`depends_on` 缺失/空数组视为无依赖，天然满足）；
+3. 该 expr 的 `st.updatedAt` 距 `now` 已超过新 opt `unclaimedMs`（默认 `1800000` = 30 分钟，风格与 `staleMs` 同级，可经 `opts` 注入覆盖，便于单测与 env 调节）。
+
+依赖判定语义与 `lib/index.js` 的 `depsSatisfied`（约 L1645-1652）保持一致：deps 为空数组 → 满足；否则每个依赖 id 必须能在 `steps` 中找到且 `status === 'approved'`（按 `String(id)` 比对，容忍 number/string id 混用）。
+
+**为何不复用 `staleMs`**：`staleMs` 是 `executing-stale`（④）专用的「执行中停滞」语义——衡量的是「已经在做但卡住了」；`unclaimedMs` 衡量的是完全不同的状态——「压根没人在做」（`pending` 而非 `executing`）。两者混用会让「可执行没人做」与「执行中卡住」互相干扰：例如运维把 `staleMs` 调小以更快发现卡死的执行，会连带误触发大量「刚变可执行还没来得及认领」的假阳性；反之调大 `staleMs` 以容忍长任务，又会让无人认领的步骤迟迟不被发现。这是本规格的明确设计决定，两个阈值语义独立、互不复用。
+
+**计时基准的取舍**：用 `st.updatedAt` 而非「最后一个依赖被 approve 的时刻」——任何写入该 expr 的操作都会重置这个计时器，因此该判据天然偏保守、偏少报（宁可晚叫不可误叫）。若某依赖早已 approved 但 expr 因其它步骤的活动而频繁 touch `updatedAt`，本信号会被持续推迟触发。后续可改进方向：改用「该步骤最后一个依赖被 approve 的时刻」（需读 `steps[].notes` 里的审批时间戳）以更精确定位「认领窗口」的起点，本次先用 `updatedAt` 这一保守近似。
+
+### 17.3 与既有 5 个信号的边界
+`unclaimed-pending` 只匹配 `status === 'pending'` 的步骤，与其余信号的匹配条件结构性互斥：
+- 依赖已满足但步骤是 `executing` → 归 `executing-stale`（④）负责，不报 `unclaimed-pending`；
+- 依赖已满足但步骤是 `review` → 归 `review-pending`（②）负责，不报 `unclaimed-pending`；
+- 全部步骤已 `approved`（无 `pending` 步骤）→ 仍只报 `finalize-pending`（⑤），`unclaimedSteps` 恒为空，不会被 `unclaimed-pending` 吞并。
+
+同一 expr 允许并列命中多个信号（`signals` 数组本就支持），但每个信号的触发条件均独立成立，互不覆盖、互不替代。
+
+### 17.4 范围
+本任务只补这一个纯函数层信号。接线到心跳循环、唤醒台账、`/health-check` 暴露由后续任务负责，本任务未改动 `lib/index.js`。
+
+### 17.5 测试
+`test/heartbeat-scan.test.js` 新增 8 组用例（含多断言组），覆盖：`pending`+依赖已 approved+超阈值 → 报信号且 detail 含步骤 id/title；同上但未超阈值 → 不报；依赖未 approved → 不报；已 finalized / 已归档（isTest+done）→ 不报（前置守卫仍生效）；依赖已满足但步骤是 `executing`/`review` → 不报（分别验证仍由既有信号负责）；`unclaimedMs` 可经 opts 注入覆盖（传 `1000` 立即触发）且默认值 `1800000`；`depends_on` 缺失视为无依赖；全 approved 时仍只报 `finalize-pending` 不被吞并。既有 14 条用例全部保持通过（未改动其断言）。
 - 交付漂移比对的范围严格等于 `package.json` 的 `files` 清单——清单外的文件（如 `node_modules`、临时产物）不在比对范围内，这是刻意的（清单即「交付契约」，不应扩大范围）。

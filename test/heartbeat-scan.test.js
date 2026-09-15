@@ -109,3 +109,127 @@ test('scanExprSignals：无效输入容错', () => {
   assert.deepEqual(scanExprSignals(null).signals, [])
   assert.deepEqual(scanExprSignals({}).signals, [])
 })
+
+// ---- ccfeat-20260915-unclaimed: unclaimed-pending（可执行但无人认领）----
+
+test('unclaimed-pending：pending + 依赖已 approved + updatedAt 超阈值 → 报信号（含步骤 id）', () => {
+  const st = base({
+    status: 'open',
+    updatedAt: new Date(now - 3600000).toISOString(), // 1h 前，超默认 30 分钟阈值
+    steps: [
+      { id: 6, title: '前置步骤', status: 'approved' },
+      { id: 7, title: '被漏掉的步骤', status: 'pending', depends_on: [6] }
+    ]
+  })
+  const r = scanExprSignals(st, { now })
+  assert.ok(r.signals.includes('unclaimed-pending'))
+  assert.ok(r.detail.some((d) => d.includes('7') && d.includes('被漏掉的步骤')))
+})
+
+test('unclaimed-pending：pending + 依赖已 approved 但 updatedAt 未超阈值 → 不报', () => {
+  const st = base({
+    status: 'open',
+    updatedAt: new Date(now - 60000).toISOString(), // 1 分钟前，未超默认 30 分钟阈值
+    steps: [
+      { id: 6, title: '前置步骤', status: 'approved' },
+      { id: 7, title: '待认领', status: 'pending', depends_on: [6] }
+    ]
+  })
+  const r = scanExprSignals(st, { now })
+  assert.ok(!r.signals.includes('unclaimed-pending'))
+})
+
+test('unclaimed-pending：pending 但依赖尚未 approved → 不报', () => {
+  const st = base({
+    status: 'open',
+    updatedAt: new Date(now - 3600000).toISOString(),
+    steps: [
+      { id: 6, title: '前置步骤', status: 'executing' },
+      { id: 7, title: '还不能做', status: 'pending', depends_on: [6] }
+    ]
+  })
+  const r = scanExprSignals(st, { now })
+  assert.ok(!r.signals.includes('unclaimed-pending'))
+})
+
+test('unclaimed-pending：已 finalized / 已归档 → 不报（前置守卫仍生效）', () => {
+  const finalized = base({
+    status: 'done', finalized: true,
+    updatedAt: new Date(now - 3600000).toISOString(),
+    steps: [
+      { id: 6, status: 'approved' },
+      { id: 7, status: 'pending', depends_on: [6] }
+    ]
+  })
+  assert.ok(!scanExprSignals(finalized, { now }).signals.includes('unclaimed-pending'))
+
+  const archivedTest = base({
+    isTest: true, status: 'done', finalized: false,
+    updatedAt: new Date(now - 3600000).toISOString(),
+    steps: [
+      { id: 6, status: 'approved' },
+      { id: 7, status: 'pending', depends_on: [6] }
+    ]
+  })
+  assert.ok(!scanExprSignals(archivedTest, { now }).signals.includes('unclaimed-pending'))
+})
+
+test('unclaimed-pending：依赖已满足但步骤是 executing 或 review → 不报（分别由既有信号负责）', () => {
+  const executing = base({
+    status: 'open',
+    updatedAt: new Date(now - 3600000).toISOString(),
+    steps: [
+      { id: 6, status: 'approved' },
+      { id: 7, status: 'executing', depends_on: [6] }
+    ]
+  })
+  assert.ok(!scanExprSignals(executing, { now }).signals.includes('unclaimed-pending'))
+
+  const review = base({
+    status: 'open',
+    updatedAt: new Date(now - 3600000).toISOString(),
+    steps: [
+      { id: 6, status: 'approved' },
+      { id: 7, status: 'review', depends_on: [6] }
+    ]
+  })
+  const r = scanExprSignals(review, { now })
+  assert.ok(!r.signals.includes('unclaimed-pending'))
+  assert.ok(r.signals.includes('review-pending'))
+})
+
+test('unclaimed-pending：unclaimedMs 可经 opts 注入覆盖（传 1000 立即触发），默认值为 1800000', () => {
+  const st = base({
+    status: 'open',
+    updatedAt: new Date(now - 2000).toISOString(), // 2s 前
+    steps: [
+      { id: 6, status: 'approved' },
+      { id: 7, status: 'pending', depends_on: [6] }
+    ]
+  })
+  // 默认阈值（30 分钟）下不触发
+  assert.ok(!scanExprSignals(st, { now }).signals.includes('unclaimed-pending'))
+  // 注入 unclaimedMs:1000（1 秒）后立即触发
+  assert.ok(scanExprSignals(st, { now, unclaimedMs: 1000 }).signals.includes('unclaimed-pending'))
+})
+
+test('unclaimed-pending：depends_on 缺失/空数组视为无依赖，天然满足', () => {
+  const st = base({
+    status: 'open',
+    updatedAt: new Date(now - 3600000).toISOString(),
+    steps: [{ id: 1, title: '首步骤', status: 'pending' }]
+  })
+  const r = scanExprSignals(st, { now })
+  assert.ok(r.signals.includes('unclaimed-pending'))
+})
+
+test('unclaimed-pending：全部步骤已 approved 时仍只报 finalize-pending（不被 unclaimed-pending 吞并）', () => {
+  const st = base({
+    status: 'open',
+    updatedAt: new Date(now - 3600000).toISOString(),
+    steps: [{ id: 1, status: 'approved' }, { id: 2, status: 'approved' }]
+  })
+  const r = scanExprSignals(st, { now })
+  assert.ok(r.signals.includes('finalize-pending'))
+  assert.ok(!r.signals.includes('unclaimed-pending'))
+})
