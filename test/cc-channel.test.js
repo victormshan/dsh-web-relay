@@ -591,6 +591,27 @@ test('parseResetsAt：从 "resets 5:10am (Asia/Shanghai)" 尽力解析出未来�
   assert.ok(Date.parse(iso) > now, '解析出的 resetsAt 必须晚于 now');
 });
 
+// 2026-09-16 修复两个缺陷后补的**精确时刻**断言。此前只用「> now」判断，于是下面两个问题长期未被发现：
+//  ① **8 小时时区偏差**：zonedTimeToUtcMs 的迭代以「当前猜测」而非「目标挂钟分量」做差，
+//     每次固定偏 -8h、3 次后偏 -24h，再被「目标已过→顺延一天」补偿推回 +8h —— 净效果整体晚 8 小时。
+//     实测真实文案被解析为 UTC 07:00（本地 15:00），而正确是本地 07:00。
+//     影响：shouldSkipForKnownQuotaExhaustion 的「不盲等」短路按**错误时刻**执行（本例多跳 8 小时）。
+//  ② **分钟与时区可选**：真实文案是 `resets 7am (Asia/Shanghai)`（只有小时），而旧正则要求 H:MM。
+test('parseResetsAt：精确时刻（时区偏移 + 仅小时形态）——必须落到本地时刻而非把墙上时间当 UTC', () => {
+  const now = Date.parse('2026-09-15T19:02:00Z'); // 本地(Asia/Shanghai) 2026-09-16 03:02
+  // 真实文案（60 字节全文，只有小时）：本地 09-16 07:00 = UTC 09-15T23:00
+  assert.equal(
+    parseResetsAt("You've hit your session limit · resets 7am (Asia/Shanghai)", { now }),
+    '2026-09-15T23:00:00.000Z'
+  );
+  // 无时区 → 回退默认 Asia/Shanghai，结果同上
+  assert.equal(parseResetsAt('resets 7am', { now }), '2026-09-15T23:00:00.000Z');
+  // H:MM 形态：本地 09-16 03:20 = UTC 09-15T19:20
+  assert.equal(parseResetsAt('resets 3:20am (Asia/Shanghai)', { now }), '2026-09-15T19:20:00.000Z');
+  // H:MM pm：本地 09-16 23:05 = UTC 09-16T15:05
+  assert.equal(parseResetsAt('resets 11:05pm (Asia/Shanghai)', { now }), '2026-09-16T15:05:00.000Z');
+});
+
 test('parseResetsAt：无法识别的文本 → null，不抛错', () => {
   assert.equal(parseResetsAt('claude exit=1; done.flag=missing'), null);
   assert.equal(parseResetsAt(''), null);
