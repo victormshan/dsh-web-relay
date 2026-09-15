@@ -534,3 +534,71 @@ unknown 处置流程（文字流程图）：
 
 ### 18.8 测试
 `test/heartbeat-scan.test.js` 新增 11 组用例：`exprFingerprint` 步骤状态变化/新增 note/收口三种情形指纹均不同、同一状态两次调用指纹相同（稳定）、无效输入容错；`evaluateWakeOutcomes` changed/unchanged/gone 三态、fail-open（畸形 entry 不抛错）；唤醒台账容量上限 20 条（镜像 `lib/index.js` 内 `push`+`splice` 逻辑复测，因该逻辑位于 `apply()` 闭包内不可直接 import，与 `test/artifacts-update.test.js` 对闭包内逻辑的既有测试方式一致）；源码契约顺序守卫（见 §18.5）。既有 22 条用例全部保持通过（未改动其断言）。
+
+## 19. 派发前规格锚点校验（check-spec anchors，主 agent 工具域，2026-09-16）
+
+> 与 §10-§18 不同，本节描述的是**主 agent 工作区工具**（`D:\dsh relay test\check-spec.mjs`、
+> `scan-spec-templates.mjs`），不是插件 `lib/` 代码。记录于此是为了让「派发前门控」这一环与 cc 交付链
+> 共享同一份事实来源。
+
+### 19.1 动因（两次实测，均为规格自身缺陷）
+
+1. **行号漂移**：cc 规格普遍写「见 `lib/index.js` 约 L4794」这类引用，源文件一改行号即失效，cc 会照着找
+   → 可能改错位置。这是主 agent 写规格时最反复的失误（本会话多份规格都靠回源重查才发现行号已漂）。
+   活证据：为 `lib/heartbeat-scan.js` 声明 L15 的锚点 `scanExprSignals` 被判漂移——前一任务刚在文件头加了
+   JSDoc 与 `unclaimedMs` 参数，函数已下移。
+2. **锚点多重命中**（更致命）：规格让 cc 用某字符串定位，而该字符串在文件内出现多次时，`indexOf` 可能取到
+   错的那个。实测事故（§16）：自检钩子的 health handler 切片命中「搜索字面量自身」→ 切片退化成 96 字符
+   → 14 个必需字段全部判为缺失 → 契约检查恒失败 → **每次宿主重启假唤醒主 agent**。而那一版交付的
+   **18 个单测全是绿的**（只喂内存 fake，从未走真实提取路径）。
+
+### 19.2 校验内容与级别
+
+| 形态 | 判据 | 级别 |
+|---|---|---|
+| `{ file, pattern }` | pattern 必须在 file 内出现 ≥1 次 | **FAIL（不可派发）** |
+| `{ file, line, expect }` | 该行必须包含 expect（抓行号漂移） | **FAIL** |
+| `{ file, pattern }` 命中 >1 次 | 锚点非唯一，`indexOf` 可能取错 | **WARN** |
+| prompt 内「文件 + 约 Lnnn」引用 | ±15 行内找不到同行提及的锚点 | **WARN** |
+| 未声明 `anchors` | 提示（实现类规格建议声明） | hint |
+
+规格声明示例（任务模块顶层，与 `taskId` / `refs` 同级）：
+
+```js
+export const task = {
+  taskId: 'ccfeat-example',
+  refs: ['lib/heartbeat-scan.js'],
+  anchors: [
+    { file: 'lib/heartbeat-scan.js', pattern: 'export function scanPendingSignals', note: '待扩展的纯函数' },
+    { file: 'lib/index.js', line: 4800, expect: 'scanPendingSignals(all,', note: '调用点（行号锚点）' },
+  ],
+}
+```
+
+### 19.3 行号引用启发式（WARN 级）的三条实测修正
+
+首版连续踩三个坑，均由**自测 / 反向验证**抓出（记录以备勿重犯）：
+
+1. **对真实规格零检出**：首版只认 `/mnt/d/dsh-web-relay/` **全路径**，而主 agent 规格绝大多数写**裸相对路径**
+   （`lib/index.js 约 L4794`）→ 等于没检查。已扩展为两者都认。
+2. **高频词掩盖漂移**：首版取「最专有的 2 个 token」，第二个常是 `function` / `const` 这类在任意 ±slack 窗口内
+   都出现的词，`some()` 一命中就永不告警。**反向验证实测：故意改错行号仍报 0 告警**。已改为**只认最专有的一个**，
+   并加专有度门槛（`maxProbeOcc=20`，超过则跳过而不是假装检查过）。
+3. **对并发编辑误报**：审计正在执行的另一任务规格时报「漂移」，实为该任务**正在编辑目标文件**。已在告警文案中
+   写明：若文件在规格写就后被改动过，此属预期现象，**cc 应以符号名定位而非行号**；仅当规格新写且文件未动时，
+   才说明行号确实写错。
+
+### 19.4 规格模板扫描的缺口修复
+
+`scan-spec-templates.mjs` 原实现**硬编码 7 个文件名**，新加的规格（**含真正出过反引号事故的
+`fix-swarm-parse.mjs`**）根本不在列表里——**扫描通过却毫无保证**。已改为动态扫描 `cc-specs/*.mjs`（当前 14 份），
+并保留回归套件依赖的「需要修复的规格数 = 0」断言；anchors 提示单列、不计入该数。
+
+### 19.5 自测与边界
+
+- `node check-spec.mjs --selftest-anchors` → **23/23 通过**（IO 注入 + 内存 fake，纯函数可测）。
+- 既有规格（如 `cc-specs/v1-1.mjs`）仍 `RESULT: OK`，未因新增校验误杀。
+- **边界（必须承认）**：锚点校验是**静态文本匹配**，只证明「引用的锚点真实存在且唯一」，**不证明语义正确**
+  ——它拦截「低级但致命的定位错误」这一类，不替代审核环节（见 OPS §6「审计盲点」）。
+- 与 §16 的关系：§19 是**派发前**拦截，§16 是**重启后**漂移自检；两者互补，分别覆盖「规格引用的锚点是否可依」
+  与「交付是否真的到了运行端」。

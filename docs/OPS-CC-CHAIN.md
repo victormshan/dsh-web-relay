@@ -220,6 +220,16 @@ node "D:\dsh-web-relay\bin\watchdog.mjs" request-restart 5
   而非硬编码「未完成态」。此前硬编码使计划做完全部 approved 后一次性出现 5 项假失败（已批准仍期望「拒绝收口」、
   `finalAcceptance` 已声明仍期望「BLOCKED」、端点已落地仍期望「未实现」…）。专门用来发现漂移的套件若长期报
   假失败，会把人引去追不存在的缺陷——诊断说谎比不诊断更糟（与 L-2026-0915-069 同类）。
+- **派发前规格门控（含锚点校验）**：任何 cc 规格在 `cc-dispatch` 之前**必须先过**
+  `node check-spec.mjs <spec>`（真 import 该模块，故能抓到 `node --check` 抓不到的运行时错误）。
+  除原有的编码自检 / schema 门控 / 声明文件存在性外，现新增：
+  - `anchors` 声明校验——`{file, pattern}` 必须存在、`{file, line, expect}` 行号必须与内容一致（**FAIL**）；
+    pattern 在同一文件命中 >1 次（**WARN**，这是 §16 那次「锚点自匹配 → 契约恒失败 → 每次重启假唤醒」的形态）；
+  - prompt 内「文件 + 约 Lnnn」行号引用的启发式核对（**WARN**）。
+  自测：`node check-spec.mjs --selftest-anchors`（期望 23/23 PASS）。
+  **纪律**：实现类规格应显式声明 anchors；**裁决以退出码与 `RESULT` 行为准，不要只看过滤后的输出**
+  （本项目曾因把门控输出过滤掉而误判「门控通过」）。详见 `docs/CC-HYBRID.md` §19。
+  **注意**：行号 WARN 在「目标文件已被后续任务改动过」时属预期现象——cc 应以**符号名**定位而非行号。
   2026-09-15 实测：重启（bootId `mu1xhb9d-eca1256e` → `mu2n22lm-3c21fa77`）后 **14/14 通过**。
 - **验收器的提交归属窗口**：`verify-cc-task.mjs` 在工作树干净时按任务 id 在**最近 N 条提交**里找归属
   （`DSH_RELAY_SCOPE_LOG_N`，默认 500）。窗口原为 20，已实测踩中**静默过期**：v1-1 的提交滑到第 27 位后，
