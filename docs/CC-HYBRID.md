@@ -602,3 +602,101 @@ export const task = {
   ——它拦截「低级但致命的定位错误」这一类，不替代审核环节（见 OPS §6「审计盲点」）。
 - 与 §16 的关系：§19 是**派发前**拦截，§16 是**重启后**漂移自检；两者互补，分别覆盖「规格引用的锚点是否可依」
   与「交付是否真的到了运行端」。
+
+## 20. 配额感知抑制：仅当 pending 只有 unclaimed-pending 且配额已知耗尽时跳过唤醒（ccfeat-20260916-quotasuppress）
+
+### 20.1 动因：⑥ unclaimed-pending 的一个可预期误报
+
+`lib/cc-chain.mjs` 顶部明确「绝不代替协议审核——链条不调 `/steps/update`」：链条派发 cc 期间，步骤状态**仍是**
+`pending`。而 cc 额度耗尽时链条会停摆等待恢复（实测单段最长 **993 分钟**），远超 §17 `unclaimed-pending` 的
+30 分钟默认阈值。此时下一个待做步骤处于「可执行（依赖已 approved）+ 无人认领 + `updatedAt` 超龄」→
+`unclaimed-pending` **必然误报**：管线不是「无人认领」，而是「在等额度」——此时叫醒主 agent 无事可做。
+实测中配额停摆正是空闲类型里占比最大的一类，值得单独抑制。
+
+本任务**不改变** `unclaimed-pending` 本身的判据（§17 语义、既有 6 个信号语义均不变），只加一层配额感知的
+抑制，且抑制必须**可审计**——绝不静默吞掉。
+
+### 20.2 `shouldSuppressWake`（纯函数，`lib/heartbeat-scan.js`）
+
+```js
+shouldSuppressWake({ pending, quotaWaiting }) // → boolean
+```
+
+仅当**同时满足**以下三点才返回 `true`：
+1. `quotaWaiting === true`（即 `lib/cc-channel.js` 的 `shouldSkipForKnownQuotaExhaustion({ quotaState, now })`
+   判定「配额已知耗尽且未到 `resetsAt`」，见 §10.3，本任务**直接复用、未重写**该判定逻辑）；
+2. `pending` 是非空数组；
+3. `pending` 中**每一项**的 `signals` 数组**只包含** `'unclaimed-pending'`（长度 ≥1 且全部等于它）。
+
+其余一切情况（`pending` 为空、`quotaWaiting` 假、任一项混有其它信号、`signals` 缺失/非数组/空数组、
+`pending` 本身非数组）一律返回 `false`，且对畸形输入不抛错。
+
+**为何必须严格到「单一信号」才抑制**：只要还混有 `review-pending` / `rejected-pending` / `finalize-pending` /
+`executing-stale` / `resume-circuit-paused` 中任意一个，就必须照常唤醒——这些信号代表的情形不会随配额恢复
+而自愈（例如已被打回待重提、全部 approved 未 finalize），继续抑制会造成真实的响应延迟，与本任务「只消灭
+一个可预期误报」的范围不符。
+
+### 20.3 接线（`lib/index.js` `heartbeatTick`，约 L4848-4894）
+
+插入位置：两道既有 early return（`pending.length === 0` 与防频间隔）**之后**、sessionId 查找与
+`wakeMainAgent` 调用**之前**：
+
+```js
+const quotaState = await readCcQuotaState().catch(() => null)
+const quotaWaiting = shouldSkipForKnownQuotaExhaustion({ quotaState, now: Date.now() })
+if (shouldSuppressWake({ pending, quotaWaiting })) {
+  // 记台账，reason: 'suppressed:quota-wait'，不调用 wakeMainAgent，不更新 lastHeartbeatInjection
+}
+```
+
+- `readCcQuotaState`（`lib/index.js` L3538，本任务新增 import 行使其后移 1 行）与
+  `shouldSkipForKnownQuotaExhaustion`（`lib/cc-channel.js` L650）均为已有实现，本任务**直接复用**，未重写
+  配额判定逻辑；两者与 `runCcReviewTask` 内既有调用点（`lib/index.js` L3576-3577）共享同一份持久化状态文件
+  `cc-quota-state.json`。
+- 命中抑制时，向 `wakeLedger` 追加一条记录（容量上限仍为 20，复用既有 `push` + `splice` 逻辑）：
+  `{ at, exprs: [{exprId, fingerprint}], signals, sessionId: null, agentWoken: false,
+  reason: 'suppressed:quota-wait', suppressed: 'quota-wait', quotaResetsAt, outcomes: {} }`，
+  并 `console.warn` 一行说明「因配额耗尽（预计 `resetsAt` 恢复）跳过唤醒」——**不静默丢失**，与本项目一贯的
+  可审计要求一致（见 §18.1、OPS §6）。
+- 抑制路径**不调用** `wakeMainAgent`，也**不更新** `lastHeartbeatInjection`：既然没有真的唤醒，就不该占用
+  防频窗口，否则会推迟下一次「真正该唤醒」的时机。
+- fail-open：`readCcQuotaState().catch(() => null)` 之外再包一层 `try/catch`；`shouldSuppressWake` 调用同样
+  包一层 `try/catch`——读配额状态失败、纯函数抛错，一律 `quotaWaiting=false`/`suppressed=false`，只
+  `console.warn`，绝不阻断既有唤醒路径（偏向叫醒，而不是偏向沉默）。
+
+### 20.4 `settleWakeLedger` 跳过 suppressed 条目
+
+`settleWakeLedger`（`lib/index.js`）新增一行不变量：`if (entry && entry.suppressed) continue`，且放在既有
+`outcomes` 非空判断**之前**。理由：带 `suppressed` 字段的条目从未真正调用过 `wakeMainAgent`，谈不上
+「有没有响应」——若被当成普通条目结算，会把「没唤醒」误判为「唤醒了没人动」，污染 §18 台账核对的语义。
+
+### 20.5 不变量
+
+本任务未改变：既有 6 个信号（①-⑥）判据、`HEARTBEAT_MIN_GAP_MS` 注入间隔、`lastHeartbeatState` 既有字段、
+正常唤醒路径（`wakeMainAgent` 调用条件与参数）的任何行为；只在两道 early return 之后新增一段**旁路**判定
+——不满足抑制条件时，代码原样落入既有 sessionId 查找 → `wakeMainAgent` 分支，逻辑与本任务之前完全一致。
+
+### 20.6 测试
+
+`test/heartbeat-scan.test.js` 新增 11 组用例：`shouldSuppressWake` 覆盖「仅 unclaimed-pending 时抑制」
+（含单项/多项）、「混入 review-pending/rejected-pending/finalize-pending/executing-stale/
+resume-circuit-paused 任一均不抑制」、「多项中仅一项含额外信号也不抑制」、「`quotaWaiting=false` 不抑制」、
+「`pending` 为空不抑制」、「`signals` 缺失/非数组/空数组容错不抛错」、「`pending` 非数组/参数整体缺失容错」；
+唤醒台账抑制记录结构断言（含 `suppressed`/`quotaResetsAt`/`agentWoken=false`/`sessionId=null`）；
+`settleWakeLedger` 跳过 `suppressed` 条目（镜像复测，理由同 §18.8——该函数位于 `apply()` 闭包内不可直接
+`import`）；源码契约（`shouldSuppressWake(` 调用存在、抑制判定早于 `wakeMainAgent` 调用与
+`lastHeartbeatInjection` 赋值语句）。既有 33 条用例全部保持通过（未改动其断言），全文件合计 44 条。
+
+### 20.7 未做项与残余风险（如实说明）
+
+- **配额状态文件缺失/损坏/过期时不会抑制**：`readCcQuotaState()` 读取失败返回 `null` →
+  `shouldSkipForKnownQuotaExhaustion` 判定 `quotaWaiting=false` → 照常唤醒。这意味着若配额耗尽发生在
+  `cc-quota-state.json` 尚未被 `runCcReviewTask` 写入过的场景（例如宿主刚重启、从未真实派发过一次 cc
+  任务），或该状态文件已过 `resetsAt`（配额其实仍耗尽但记录的窗口已过期，例如恢复时间预测有误），本抑制
+  不会生效，`unclaimed-pending` 仍会照常唤醒——**这是本任务刻意接受的 fail-open 代价**，优先级是「宁可
+  多误报，不可少唤醒」。
+- 抑制只覆盖「本轮待办清一色 unclaimed-pending」这一种组合；若同一轮心跳里恰好还有其它 expr 报出别的信号
+  （即使那个信号与配额无关），整轮仍会照常唤醒——这是设计如此（§20.2），不是遗留缺口。
+- 台账 `suppressed` 记录目前未在 `/health-check` 响应体做专门的独立字段暴露（沿用既有 `wakeLedger` 字段，
+  抑制记录与正常唤醒记录混在同一数组里，靠 `suppressed` 字段区分）；如需在监控面板单独统计「抑制次数」，
+  需要后续任务在 `/health-check` 聚合层新增派生字段，本任务未做（不在写入范围内的改动）。

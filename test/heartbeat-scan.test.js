@@ -4,7 +4,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { scanExprSignals, scanPendingSignals, exprFingerprint, evaluateWakeOutcomes } from '../lib/heartbeat-scan.js'
+import { scanExprSignals, scanPendingSignals, exprFingerprint, evaluateWakeOutcomes, shouldSuppressWake } from '../lib/heartbeat-scan.js'
 
 const now = Date.now()
 const base = (over) => ({
@@ -342,4 +342,157 @@ test('源码契约：lib/index.js heartbeatTick 内结算调用位置早于 pend
   assert.ok(settleIdx >= 0, '应能在 heartbeatTick 函数体内找到台账结算调用（settleWakeLedger）')
   assert.ok(earlyReturnIdx >= 0, '应能在 heartbeatTick 函数体内找到 pending===0 的 early return')
   assert.ok(settleIdx < earlyReturnIdx, '结算调用必须早于 early return——否则无新待办的轮次永远不结算台账')
+})
+
+// ---------------------------------------------------------------------------
+// ccfeat-20260916-quotasuppress: shouldSuppressWake（配额感知抑制纯函数）
+// ---------------------------------------------------------------------------
+
+test('shouldSuppressWake：quotaWaiting=true 且 pending 全部只含 unclaimed-pending → true', () => {
+  const pending = [
+    { exprId: 'e1', signals: ['unclaimed-pending'] },
+    { exprId: 'e2', signals: ['unclaimed-pending'] }
+  ]
+  assert.equal(shouldSuppressWake({ pending, quotaWaiting: true }), true)
+})
+
+test('shouldSuppressWake：单个 pending 项只含 unclaimed-pending → true', () => {
+  assert.equal(shouldSuppressWake({ pending: [{ exprId: 'e1', signals: ['unclaimed-pending'] }], quotaWaiting: true }), true)
+})
+
+test('shouldSuppressWake：混入 review-pending（或任一其它信号）→ false（必须照常唤醒）', () => {
+  const withReview = [
+    { exprId: 'e1', signals: ['unclaimed-pending'] },
+    { exprId: 'e2', signals: ['review-pending'] }
+  ]
+  assert.equal(shouldSuppressWake({ pending: withReview, quotaWaiting: true }), false)
+  for (const sig of ['review-pending', 'rejected-pending', 'finalize-pending', 'executing-stale', 'resume-circuit-paused']) {
+    const p = [{ exprId: 'e1', signals: [sig] }]
+    assert.equal(shouldSuppressWake({ pending: p, quotaWaiting: true }), false, `信号 ${sig} 不应被抑制`)
+  }
+})
+
+test('shouldSuppressWake：多项中有一项含额外信号（unclaimed-pending + executing-stale）→ false', () => {
+  const pending = [
+    { exprId: 'e1', signals: ['unclaimed-pending'] },
+    { exprId: 'e2', signals: ['unclaimed-pending', 'executing-stale'] }
+  ]
+  assert.equal(shouldSuppressWake({ pending, quotaWaiting: true }), false)
+})
+
+test('shouldSuppressWake：quotaWaiting=false → false（即使全部只有 unclaimed-pending）', () => {
+  const pending = [{ exprId: 'e1', signals: ['unclaimed-pending'] }]
+  assert.equal(shouldSuppressWake({ pending, quotaWaiting: false }), false)
+  assert.equal(shouldSuppressWake({ pending }), false)
+})
+
+test('shouldSuppressWake：pending 为空数组 → false', () => {
+  assert.equal(shouldSuppressWake({ pending: [], quotaWaiting: true }), false)
+})
+
+test('shouldSuppressWake：signals 缺失/非数组/空数组 → false，不抛错', () => {
+  assert.equal(shouldSuppressWake({ pending: [{ exprId: 'e1' }], quotaWaiting: true }), false)
+  assert.equal(shouldSuppressWake({ pending: [{ exprId: 'e1', signals: 'unclaimed-pending' }], quotaWaiting: true }), false)
+  assert.equal(shouldSuppressWake({ pending: [{ exprId: 'e1', signals: [] }], quotaWaiting: true }), false)
+  assert.doesNotThrow(() => shouldSuppressWake({ pending: [null, undefined, 42], quotaWaiting: true }))
+  assert.equal(shouldSuppressWake({ pending: [null], quotaWaiting: true }), false)
+})
+
+test('shouldSuppressWake：pending 非数组/整体缺失参数 → false，不抛错', () => {
+  assert.equal(shouldSuppressWake({ pending: null, quotaWaiting: true }), false)
+  assert.equal(shouldSuppressWake({ quotaWaiting: true }), false)
+  assert.doesNotThrow(() => shouldSuppressWake())
+  assert.equal(shouldSuppressWake(), false)
+})
+
+// ---- ccfeat-20260916-quotasuppress: 唤醒台账「抑制记录」结构（结构断言，字段与 lib/index.js
+// heartbeatTick 内 wakeLedger.push(...) 保持一致——见 §20 文档） ----
+test('唤醒台账抑制记录结构：含 suppressed 与 quotaResetsAt，agentWoken=false，sessionId=null', () => {
+  const st = stFor({ steps: [{ id: 1, status: 'pending', notes: [] }] })
+  const pending = [{ exprId: st.exprId, signals: ['unclaimed-pending'], detail: [] }]
+  const quotaResetsAt = '2026-09-17T00:00:00.000Z'
+  // 镜像 heartbeatTick 内抑制分支的台账构造逻辑（该分支位于 apply() 闭包内不可直接 import，
+  // 与 §18.8 既有的镜像测试方式一致）
+  const entry = {
+    at: new Date().toISOString(),
+    exprs: pending.map((p) => ({ exprId: p.exprId, fingerprint: exprFingerprint(st) })),
+    signals: [...new Set(pending.flatMap((p) => p.signals))],
+    sessionId: null,
+    agentWoken: false,
+    reason: 'suppressed:quota-wait',
+    suppressed: 'quota-wait',
+    quotaResetsAt,
+    outcomes: {}
+  }
+  assert.equal(entry.agentWoken, false)
+  assert.equal(entry.sessionId, null)
+  assert.equal(entry.suppressed, 'quota-wait')
+  assert.equal(entry.reason, 'suppressed:quota-wait')
+  assert.equal(entry.quotaResetsAt, quotaResetsAt)
+  assert.deepEqual(entry.signals, ['unclaimed-pending'])
+  assert.deepEqual(entry.outcomes, {})
+  assert.equal(entry.exprs[0].exprId, st.exprId)
+})
+
+// ---- ccfeat-20260916-quotasuppress: settleWakeLedger 跳过 suppressed 条目（镜像 lib/index.js
+// settleWakeLedger 逻辑复测，理由同 §18.8——该函数位于 apply() 闭包内不可直接 import）----
+function mirrorSettleWakeLedger(ledger, currentStates) {
+  for (const entry of ledger) {
+    if (entry && entry.suppressed) continue
+    if (!entry || !entry.outcomes || Object.keys(entry.outcomes).length > 0) continue
+    entry.outcomes = evaluateWakeOutcomes(entry, currentStates)
+  }
+  return ledger
+}
+
+test('settleWakeLedger（镜像）：跳过 suppressed 条目——outcomes 保持为空、不被回填', () => {
+  const st = stFor({ steps: [{ id: 1, status: 'pending', notes: [] }] })
+  const suppressedEntry = {
+    at: new Date().toISOString(),
+    exprs: [{ exprId: st.exprId, fingerprint: exprFingerprint(st) }],
+    signals: ['unclaimed-pending'],
+    sessionId: null,
+    agentWoken: false,
+    reason: 'suppressed:quota-wait',
+    suppressed: 'quota-wait',
+    quotaResetsAt: '2026-09-17T00:00:00.000Z',
+    outcomes: {}
+  }
+  const normalEntry = {
+    at: new Date().toISOString(),
+    exprs: [{ exprId: st.exprId, fingerprint: 'stale-fingerprint-that-will-not-match' }],
+    signals: ['review-pending'],
+    sessionId: 's1',
+    agentWoken: true,
+    reason: null,
+    outcomes: {}
+  }
+  const ledger = [suppressedEntry, normalEntry]
+  mirrorSettleWakeLedger(ledger, [st])
+  assert.deepEqual(suppressedEntry.outcomes, {}, 'suppressed 条目 outcomes 不应被回填')
+  assert.notDeepEqual(normalEntry.outcomes, {}, '普通条目仍应正常结算')
+  assert.equal(normalEntry.outcomes[st.exprId], 'changed')
+})
+
+// ---- ccfeat-20260916-quotasuppress: 源码契约——heartbeatTick 内配额抑制判定必须早于
+// wakeMainAgent 调用，且抑制记录写入 suppressed/quotaResetsAt/agentWoken:false ----
+test('源码契约：lib/index.js heartbeatTick 内配额抑制路径早于 wakeMainAgent 调用', () => {
+  const indexPath = fileURLToPath(new URL('../lib/index.js', import.meta.url))
+  const src = readFileSync(indexPath, 'utf8')
+  const fnStart = src.indexOf('async function heartbeatTick')
+  assert.ok(fnStart >= 0, '应能定位 heartbeatTick 函数定义')
+  let fnEnd = src.indexOf('// v3.8 Step2（GC 定时化）', fnStart)
+  if (fnEnd < 0) fnEnd = fnStart + 10000
+  const body = src.slice(fnStart, fnEnd)
+  const suppressIdx = body.indexOf("reason: 'suppressed:quota-wait'")
+  const wakeCallIdx = body.indexOf('await wakeMainAgent(')
+  const lastInjectionAssignIdx = body.indexOf('lastHeartbeatInjection = Date.now()')
+  assert.ok(suppressIdx >= 0, '应能在 heartbeatTick 内找到抑制记录的 reason 字段')
+  assert.ok(wakeCallIdx >= 0, '应能在 heartbeatTick 内找到 wakeMainAgent 调用')
+  assert.ok(suppressIdx < wakeCallIdx, '配额抑制判定必须在 wakeMainAgent 调用之前完成')
+  assert.ok(suppressIdx < lastInjectionAssignIdx, '抑制分支必须在 lastHeartbeatInjection 赋值语句之前（抑制路径不得更新防频时间戳）')
+  assert.match(body, /suppressed:\s*'quota-wait'/, '台账抑制记录应含 suppressed 字段')
+  assert.match(body, /quotaResetsAt/, '台账抑制记录应含 quotaResetsAt 字段')
+  assert.match(body, /agentWoken:\s*false/, '抑制记录 agentWoken 应为 false')
+  assert.match(body, /shouldSuppressWake\(/, 'heartbeatTick 应调用 shouldSuppressWake 判定')
 })
