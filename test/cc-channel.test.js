@@ -415,6 +415,41 @@ test('ccWatchdogAlive：root/queue/tasks 齐全且心跳新鲜（专用心跳文
   assert.equal(res.details.heartbeatFile, 'watchdog.heartbeat');
 });
 
+// A7（2026-09-16 实测修正）: queueDepth 原实现取 readdir 长度，把 queue/ 下常态存在的
+// .dupes / .invalid 两个**归档子目录**也算进去 → 恒 ≥2，使「是队列积压还是守护缺失」的判据失真。
+// 实测证据：主 agent 探针输出 details.queueDepth=2，而当时队列里没有任何任务文件。
+test('ccWatchdogAlive：queueDepth 只计 *.task.json（归档目录 .dupes/.invalid 不得计入）', async () => {
+  const now = 1_000_000_000;
+  const root = 'D:\\cc-tasks';
+  // 情形一：只有归档目录 → 0（此前会误报为 2）
+  const fakeEmpty = createFakeFs(
+    { [`${root}\\marker`]: 'x' },
+    {
+      dirs: {
+        [path.join(root, 'queue')]: ['.dupes', '.invalid'],
+        [path.join(root, 'tasks')]: ['rev-1'],
+      },
+      stats: { [path.join(root, 'watchdog.heartbeat')]: now - 1000 },
+    }
+  );
+  const resEmpty = await ccWatchdogAlive({ fsImpl: fakeEmpty, root, now });
+  assert.equal(resEmpty.details.queueDepth, 0, '队列里没有任务文件时应为 0');
+
+  // 情形二：2 个真任务 + 2 个归档目录 → 2
+  const fakeTwo = createFakeFs(
+    { [`${root}\\marker`]: 'x' },
+    {
+      dirs: {
+        [path.join(root, 'queue')]: ['.dupes', '.invalid', 'a.task.json', 'b.task.json'],
+        [path.join(root, 'tasks')]: ['rev-1'],
+      },
+      stats: { [path.join(root, 'watchdog.heartbeat')]: now - 1000 },
+    }
+  );
+  const resTwo = await ccWatchdogAlive({ fsImpl: fakeTwo, root, now });
+  assert.equal(resTwo.details.queueDepth, 2, '只计 *.task.json');
+});
+
 test('ccWatchdogAlive：专用心跳文件缺失但 watchdog.log 新鲜 → 回退链正确，仍判新鲜', async () => {
   const now = 1_000_000_000;
   const root = 'D:\\cc-tasks';

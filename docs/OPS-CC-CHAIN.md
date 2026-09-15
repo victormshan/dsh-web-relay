@@ -226,10 +226,21 @@ node "D:\dsh-web-relay\bin\watchdog.mjs" request-restart 5
   - `anchors` 声明校验——`{file, pattern}` 必须存在、`{file, line, expect}` 行号必须与内容一致（**FAIL**）；
     pattern 在同一文件命中 >1 次（**WARN**，这是 §16 那次「锚点自匹配 → 契约恒失败 → 每次重启假唤醒」的形态）；
   - prompt 内「文件 + 约 Lnnn」行号引用的启发式核对（**WARN**）。
-  自测：`node check-spec.mjs --selftest-anchors`（期望 23/23 PASS）。
+  自测：`node check-spec.mjs --selftest-anchors`（期望 **25/25** PASS）。
   **纪律**：实现类规格应显式声明 anchors；**裁决以退出码与 `RESULT` 行为准，不要只看过滤后的输出**
   （本项目曾因把门控输出过滤掉而误判「门控通过」）。详见 `docs/CC-HYBRID.md` §19。
   **注意**：行号 WARN 在「目标文件已被后续任务改动过」时属预期现象——cc 应以**符号名**定位而非行号。
+- **`watchdog.heartbeat` 的语义是「守护在工作」，不是仅「守护在轮询」（A6，2026-09-16 实测修复）**：
+  `cc-watchdog.sh` 是**前台串行**调用 `runner.sh`，任务期间其轮询循环阻塞 → 心跳会冻结数百秒
+  （单任务 200–900s，实测中位约 8 分钟），而 relay 的 `ccWatchdogAlive` 阈值仅 **120s** →
+  任务执行期间**必然**判 stale：非 strict 下 reason=`alive-unverified:<age>`（仍派发，但会在
+  `/health-check` 的 `ccWatchdogWarning` 留下误导性告警）；`DSH_CC_WATCHDOG_STRICT=1` 时
+  `ok:false` → **直接阻断派发**。修法：`runner.sh` 在任务期间起一个 15s 周期 touch 的后台打点
+  （`trap` 退出清理），不改变串行语义。**因此不要再用「心跳龄几十秒」单独判断守护存活**——
+  空闲时它 5s 一跳，任务期间靠上述打点保持新鲜。
+- **`ccWatchdogAlive.details.queueDepth` 只计 `*.task.json`（A7，2026-09-16 实测修复）**：
+  原实现取 `readdir('queue')` 长度，而 `queue/` 下常态存在 `.dupes` 与 `.invalid` 两个归档子目录
+  → 该字段**恒 ≥2**，会让「是队列积压还是守护缺失」的判据失真（实测 `queueDepth=2` 时队列里并无任务）。
   2026-09-15 实测：重启（bootId `mu1xhb9d-eca1256e` → `mu2n22lm-3c21fa77`）后 **14/14 通过**。
 - **验收器的提交归属窗口**：`verify-cc-task.mjs` 在工作树干净时按任务 id 在**最近 N 条提交**里找归属
   （`DSH_RELAY_SCOPE_LOG_N`，默认 500）。窗口原为 20，已实测踩中**静默过期**：v1-1 的提交滑到第 27 位后，
