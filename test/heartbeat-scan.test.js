@@ -2,7 +2,9 @@
 // 运行：node --test test/heartbeat-scan.test.js
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { scanExprSignals, scanPendingSignals } from '../lib/heartbeat-scan.js'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { scanExprSignals, scanPendingSignals, exprFingerprint, evaluateWakeOutcomes } from '../lib/heartbeat-scan.js'
 
 const now = Date.now()
 const base = (over) => ({
@@ -232,4 +234,112 @@ test('unclaimed-pending：全部步骤已 approved 时仍只报 finalize-pending
   const r = scanExprSignals(st, { now })
   assert.ok(r.signals.includes('finalize-pending'))
   assert.ok(!r.signals.includes('unclaimed-pending'))
+})
+
+// ---- ccfeat-20260915-wakeledger: exprFingerprint / evaluateWakeOutcomes ----
+
+const stFor = (over) => base({
+  steps: [{ id: 1, status: 'executing', reviewedBy: null, notes: [{ at: new Date(now - 5000).toISOString(), action: 'start' }] }],
+  ...over
+})
+
+test('exprFingerprint：步骤状态变化 → 指纹不同', () => {
+  const a = stFor({ steps: [{ id: 1, status: 'executing', notes: [] }] })
+  const b = stFor({ steps: [{ id: 1, status: 'review', notes: [] }] })
+  assert.notEqual(exprFingerprint(a), exprFingerprint(b))
+})
+
+test('exprFingerprint：新增 note（status 不变）→ 指纹不同', () => {
+  const notesA = [{ at: new Date(now - 5000).toISOString(), action: 'start' }]
+  const notesB = [...notesA, { at: new Date(now - 1000).toISOString(), action: 'progress' }]
+  const a = stFor({ steps: [{ id: 1, status: 'executing', notes: notesA }] })
+  const b = stFor({ steps: [{ id: 1, status: 'executing', notes: notesB }] })
+  assert.notEqual(exprFingerprint(a), exprFingerprint(b))
+})
+
+test('exprFingerprint：收口（finalize）→ 指纹不同', () => {
+  const before = stFor({ status: 'open', finalized: false, steps: [{ id: 1, status: 'approved', notes: [] }] })
+  const after = stFor({ status: 'done', finalized: true, steps: [{ id: 1, status: 'approved', notes: [] }] })
+  assert.notEqual(exprFingerprint(before), exprFingerprint(after))
+})
+
+test('exprFingerprint：同一状态两次调用 → 指纹相同（稳定）', () => {
+  const st = stFor({})
+  assert.equal(exprFingerprint(st), exprFingerprint(st))
+  // 深拷贝出的等价对象也应得到相同指纹（指纹只取决于状态内容，不取决于对象身份）
+  assert.equal(exprFingerprint(st), exprFingerprint(JSON.parse(JSON.stringify(st))))
+})
+
+test('exprFingerprint：无效输入容错（返回空串，不抛错）', () => {
+  assert.equal(exprFingerprint(null), '')
+  assert.equal(exprFingerprint(undefined), '')
+  assert.equal(exprFingerprint({}), exprFingerprint({}))
+})
+
+test('evaluateWakeOutcomes：状态变了 → changed', () => {
+  const st0 = stFor({ steps: [{ id: 1, status: 'executing', notes: [] }] })
+  const entry = { exprs: [{ exprId: st0.exprId, fingerprint: exprFingerprint(st0) }], outcomes: {} }
+  const st1 = stFor({ steps: [{ id: 1, status: 'approved', notes: [] }] })
+  const out = evaluateWakeOutcomes(entry, [st1])
+  assert.equal(out[st0.exprId], 'changed')
+})
+
+test('evaluateWakeOutcomes：状态没变 → unchanged', () => {
+  const st0 = stFor({ steps: [{ id: 1, status: 'executing', notes: [] }] })
+  const entry = { exprs: [{ exprId: st0.exprId, fingerprint: exprFingerprint(st0) }], outcomes: {} }
+  const out = evaluateWakeOutcomes(entry, [st0])
+  assert.equal(out[st0.exprId], 'unchanged')
+})
+
+test('evaluateWakeOutcomes：expr 已不存在 → gone', () => {
+  const st0 = stFor({})
+  const entry = { exprs: [{ exprId: st0.exprId, fingerprint: exprFingerprint(st0) }], outcomes: {} }
+  const out = evaluateWakeOutcomes(entry, [])
+  assert.equal(out[st0.exprId], 'gone')
+})
+
+test('evaluateWakeOutcomes：fail-open——畸形 entry（缺 exprs / 非法字段）不抛错', () => {
+  assert.doesNotThrow(() => evaluateWakeOutcomes(null, []))
+  assert.doesNotThrow(() => evaluateWakeOutcomes({}, []))
+  assert.doesNotThrow(() => evaluateWakeOutcomes({ exprs: 'not-an-array' }, []))
+  assert.doesNotThrow(() => evaluateWakeOutcomes({ exprs: [null, 42, { noExprId: true }] }, []))
+  assert.deepEqual(evaluateWakeOutcomes({}, []), {})
+  assert.deepEqual(evaluateWakeOutcomes({ exprs: [null, 42, { noExprId: true }] }, 'not-an-array'), {})
+})
+
+// ---- ccfeat-20260915-wakeledger: 台账上限 20 条（镜像 lib/index.js heartbeatTick 内 wakeLedger.push
+// + splice 逻辑——该逻辑是 apply() 闭包内状态，不可直接 import，故以镜像函数复测；
+// 与 test/artifacts-update.test.js 对 apply() 闭包内逻辑的既有测试方式一致）----
+function pushLedgerCapped(ledger, entry, cap = 20) {
+  ledger.push(entry)
+  if (ledger.length > cap) ledger.splice(0, ledger.length - cap)
+  return ledger
+}
+
+test('唤醒台账容量上限 20 条：第 21 条挤掉最旧', () => {
+  let ledger = []
+  for (let i = 0; i < 21; i++) {
+    pushLedgerCapped(ledger, { at: i, exprs: [], signals: [], sessionId: 's', agentWoken: true, reason: null, outcomes: {} })
+  }
+  assert.equal(ledger.length, 20)
+  assert.equal(ledger[0].at, 1) // 第 0 条（最旧）被挤掉
+  assert.equal(ledger[ledger.length - 1].at, 20)
+})
+
+// ---- ccfeat-20260915-wakeledger: 源码契约（顺序守卫）——heartbeatTick 内结算调用必须早于
+// 「if (pending.length === 0) return」，否则「无新待办」的轮次永远不会结算台账 ----
+test('源码契约：lib/index.js heartbeatTick 内结算调用位置早于 pending===0 的 early return', () => {
+  const indexPath = fileURLToPath(new URL('../lib/index.js', import.meta.url))
+  const src = readFileSync(indexPath, 'utf8')
+  const fnStart = src.indexOf('async function heartbeatTick')
+  assert.ok(fnStart >= 0, '应能定位 heartbeatTick 函数定义')
+  // heartbeatTick 之后到下一个顶层块（GC 定时化注释）之间即函数体，足够覆盖两个断言锚点
+  let fnEnd = src.indexOf('// v3.8 Step2（GC 定时化）', fnStart)
+  if (fnEnd < 0) fnEnd = fnStart + 6000
+  const body = src.slice(fnStart, fnEnd)
+  const settleIdx = body.indexOf('settleWakeLedger(')
+  const earlyReturnIdx = body.indexOf('if (pending.length === 0) return')
+  assert.ok(settleIdx >= 0, '应能在 heartbeatTick 函数体内找到台账结算调用（settleWakeLedger）')
+  assert.ok(earlyReturnIdx >= 0, '应能在 heartbeatTick 函数体内找到 pending===0 的 early return')
+  assert.ok(settleIdx < earlyReturnIdx, '结算调用必须早于 early return——否则无新待办的轮次永远不结算台账')
 })

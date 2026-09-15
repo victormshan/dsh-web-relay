@@ -332,7 +332,7 @@ curl -X POST http://127.0.0.1:3080/dsh-web-relay/route/decide -H 'content-type: 
 | `/dsh-web-relay/admin/resume-scan` | `adminResumeScanHandler` |
 | `/dsh-web-relay/admin/heartbeat-check` | `adminHeartbeatHandler` |
 
-### 14.4 环境开关全量清单（与 `lib/*.js` 提取的 20 个一一对应）
+### 14.4 环境开关全量清单（与 `lib/*.js` 提取的 21 个一一对应）
 | 开关 | 定义/读取位置（`lib/`） |
 | --- | --- |
 | `DSH_CC_REVIEW_ENABLED` | `index.js` |
@@ -351,6 +351,7 @@ curl -X POST http://127.0.0.1:3080/dsh-web-relay/route/decide -H 'content-type: 
 | `DSH_RELAY_HEARTBEAT_STALE_MS` | `index.js` |
 | `DSH_RELAY_REPO` | `index.js` |
 | `DSH_RELAY_REPO_PATH` | `index.js` |
+| `DSH_RELAY_UNCLAIMED_MS` | `index.js` |
 | `DSH_RELAY_WEBHOOK_URL` | `index.js` |
 | `DSH_RELAY_WORKSPACE` | `index.js` |
 | `DSH_SESSION_ID` | `index.js` |
@@ -496,8 +497,40 @@ unknown 处置流程（文字流程图）：
 同一 expr 允许并列命中多个信号（`signals` 数组本就支持），但每个信号的触发条件均独立成立，互不覆盖、互不替代。
 
 ### 17.4 范围
-本任务只补这一个纯函数层信号。接线到心跳循环、唤醒台账、`/health-check` 暴露由后续任务负责，本任务未改动 `lib/index.js`。
+本任务只补这一个纯函数层信号。接线到心跳循环、唤醒台账、`/health-check` 暴露由后续任务负责，本任务未改动 `lib/index.js`。（后续任务见 §18，ccfeat-20260915-wakeledger 已完成接线。）
 
 ### 17.5 测试
 `test/heartbeat-scan.test.js` 新增 8 组用例（含多断言组），覆盖：`pending`+依赖已 approved+超阈值 → 报信号且 detail 含步骤 id/title；同上但未超阈值 → 不报；依赖未 approved → 不报；已 finalized / 已归档（isTest+done）→ 不报（前置守卫仍生效）；依赖已满足但步骤是 `executing`/`review` → 不报（分别验证仍由既有信号负责）；`unclaimedMs` 可经 opts 注入覆盖（传 `1000` 立即触发）且默认值 `1800000`；`depends_on` 缺失视为无依赖；全 approved 时仍只报 `finalize-pending` 不被吞并。既有 14 条用例全部保持通过（未改动其断言）。
 - 交付漂移比对的范围严格等于 `package.json` 的 `files` 清单——清单外的文件（如 `node_modules`、临时产物）不在比对范围内，这是刻意的（清单即「交付契约」，不应扩大范围）。
+
+## 18. 心跳接线 unclaimed-pending + 唤醒台账：区分「没唤醒」与「唤醒了没人动」（ccfeat-20260915-wakeledger）
+
+### 18.1 审计盲点（为什么需要唤醒台账）
+`lastHeartbeatState.injected` 只表示「`wakeMainAgent` 调用成功」，不代表主 agent 真的行动了——心跳注入若落进一个没人消费的会话，`injected` 仍为 `true` 而实际什么都没发生。§17 事故排查时发现：因宿主日志被重启截断，事后已无法判定「到底是没唤醒，还是唤醒了没人动」。唤醒台账（`wakeLedger`）就是为消灭这个盲区新增的：每次成功唤醒时记录被唤醒的 expr 状态指纹，下一轮心跳核对该指纹是否变化，从而把两种情形区分开。
+
+### 18.2 接线：unclaimedMs 传入 scanPendingSignals
+`heartbeatTick`（`lib/index.js`）新增 `HEARTBEAT_UNCLAIMED_MS`（读取 `DSH_RELAY_UNCLAIMED_MS`，非法/缺失回退 `1800000`），与既有 `HEARTBEAT_STALE_MS`/`HEARTBEAT_MAX_AGE_MS` 同级传入 `scanPendingSignals(all, { staleMs, maxAgeMs, unclaimedMs })`。`heartbeatHandoff` 文案补一句 `unclaimed-pending` 的处置指引（判断应自行执行还是派发给 cc），否则收到唤醒的主 agent 不知道新信号该怎么办。
+
+### 18.3 唤醒台账（wakeLedger）
+- 模块级内存态，与 `lastHeartbeatState` 同级（`let wakeLedger = []`），进程内状态，宿主重启会清空——定位是让「同一宿主生命周期内」的唤醒可审计，不是跨重启持久化。
+- 每次 `wakeMainAgent` 调用成功（`w.agentWoken === true`）才追加一条记录：`{ at, exprs: [{exprId, fingerprint}], signals, sessionId, agentWoken, reason, outcomes: {} }`；一次注入覆盖多个 expr 时逐个记录指纹。
+- 容量上限 20 条：`wakeLedger.push(entry)` 后 `if (wakeLedger.length > 20) wakeLedger.splice(0, wakeLedger.length - 20)`，超出丢弃最旧，避免无界增长。
+- `/health-check` 新增 `wakeLedger` 字段（最近 ≤20 条，含 `outcomes`），与既有 `heartbeat` 字段并列；因 `wakeLedger` 与 `lastHeartbeatState` 一样是模块级同步状态（不经 `heavyHealth()` 的异步聚合/TTL 缓存），故按 §14 历史教训的精神在两处都补齐：模块级默认值 `let wakeLedger = []`（避免未初始化）与 `healthCheckHandler` 返回体里的 `wakeLedger: wakeLedger || []`。
+
+### 18.4 状态指纹与核对（纯函数，`lib/heartbeat-scan.js`）
+- `exprFingerprint(st)`：由 expr 级 `status`/`finalized`，以及每个 step 的 `id`/`status`/`reviewedBy`/`notes.length`/最后一条 note 的 `at` 拼接成稳定字符串。选择这些字段的原因：`status`/`reviewedBy` 覆盖「步骤状态变化」；`notes.length` + 最后一条 note 的 `at` 覆盖「新增 note 但 status 未变」；expr 级 `status`/`finalized` 覆盖「收口」。不用整份 `JSON.stringify(st)`：`st` 里混有 `updatedAt` 等可能被无关操作 touch 的字段，用它做指纹会把「什么都没变」误判为 `changed`，噪音过大。
+- `evaluateWakeOutcomes(entry, currentStates)`：给定一条台账记录与当前状态列表，为 `entry.exprs` 里每个 `exprId` 判定 `'changed'`（指纹不同）/`'unchanged'`（指纹相同）/`'gone'`（当前状态列表里已找不到该 expr）。fail-open：`entry`/`currentStates` 畸形（缺 `exprs`、非数组、成员缺 `exprId` 等）不抛错，尽力返回能算出的部分结果。
+
+### 18.5 结算时机（顺序硬性要求）
+`heartbeatTick` 内新增 `settleWakeLedger(all)`：对 `outcomes` 仍为空（尚未结算）的台账记录，用本轮扫描到的 `all`（当前状态列表）计算并回填 `outcomes`，然后 `console.warn` 一行汇总（`[心跳台账] 上次注入后 N 个 expr 状态有变化、M 个无变化`）。
+
+**该调用必须放在两道 early return（`if (pending.length === 0) return` 与 `if (距上次成功注入 < HEARTBEAT_MIN_GAP_MS) return`）之前**，理由：若放在其后，恰恰是「本轮无新待办」（`pending.length === 0`）的那些轮次——也正是「唤醒了但没人动」的典型场景——永远不会执行到结算代码，台账就失去意义。`test/heartbeat-scan.test.js` 用源码字符串 index 比较（`body.indexOf('settleWakeLedger(') < body.indexOf('if (pending.length === 0) return')`）把这条顺序约束钉成契约测试，防止后人重构时把它挪到 early return 之后。
+
+### 18.6 fail-open
+台账结算（`settleWakeLedger`）与台账写入（`wakeLedger.push`）各自包一层 `try/catch`，异常只 `console.warn`，绝不允许阻断既有的 `scanPendingSignals → wakeMainAgent` 唤醒路径——即使台账代码整体出错，心跳唤醒仍照常工作。
+
+### 18.7 不变量
+本任务未改变既有 5 个信号（①-⑤）语义、`unclaimed-pending`（⑥）判据、`HEARTBEAT_MIN_GAP_MS` 注入间隔、`lastHeartbeatState` 既有字段与唤醒行为；只做接线（传参）、新增台账（旁路状态）与核对（旁路只读计算 + 回填自身字段），不改动既有唤醒判断逻辑的任何分支条件。
+
+### 18.8 测试
+`test/heartbeat-scan.test.js` 新增 11 组用例：`exprFingerprint` 步骤状态变化/新增 note/收口三种情形指纹均不同、同一状态两次调用指纹相同（稳定）、无效输入容错；`evaluateWakeOutcomes` changed/unchanged/gone 三态、fail-open（畸形 entry 不抛错）；唤醒台账容量上限 20 条（镜像 `lib/index.js` 内 `push`+`splice` 逻辑复测，因该逻辑位于 `apply()` 闭包内不可直接 import，与 `test/artifacts-update.test.js` 对闭包内逻辑的既有测试方式一致）；源码契约顺序守卫（见 §18.5）。既有 22 条用例全部保持通过（未改动其断言）。

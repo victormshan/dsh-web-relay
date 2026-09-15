@@ -166,6 +166,7 @@ node "D:\dsh relay test\protocol-close-step.mjs" 7 --evidence-file "D:\dsh relay
 - **额度与交互式使用共享**：同一订阅池，额度耗尽时链条只能等窗口重置（无法绕过）。
 - **链条不覆盖**：协议审核/approve、版间门评估、`finalAcceptance` 声明、三版端到端终验——这些必须由主 agent 执行。
 - **审计盲点**：机械验收只证明「范围/语法/测试/覆盖/编码」，不证明「实现是否符合意图」；意图层仍需审核环节。
+- **心跳唤醒是否真被响应，原先不可判定**：`heartbeat` 字段的 `injected:true` 只证明「注入调用成功」，不证明主 agent 真的处理了——若注入落进无人消费的会话，`injected` 仍为 `true` 而实际零动作，事后（尤其宿主重启导致日志截断后）无法区分「没唤醒」与「唤醒了没人动」。`ccfeat-20260915-wakeledger`（`/health-check` 的 `wakeLedger` 字段）部分缓解此盲点：记录每次成功唤醒时的 expr 状态指纹，下一轮心跳核对是否变化并回填 `outcomes`（`changed`/`unchanged`/`gone`）。仍是**进程内状态**，宿主重启会清空，不能替代跨重启的持久化审计；且只证明「状态变了」，不证明「变化符合意图」——与上一条盲点同类，仍需人工/审核环节兜底。
 - **测试环境两侧不同（关键）**：cc（headless claude）在 **WSL** `/mnt/d/dsh-web-relay` 跑测试，而验收器
   `verify-cc-task.mjs` 在 **Windows** 跑同一份文件。实测同一提交、同为 390 例 `*.test.js` 子集：
   **WSL 3 失败 / Windows 0 失败**，失败恒为 `test/shadow-gate.test.js` 的三项
@@ -201,6 +202,9 @@ node "D:\dsh-web-relay\bin\watchdog.mjs" request-restart 5
 #    交付漂移/路由契约自检结果看该响应的 selfCheck 字段（ccfeat-20260915-selfcheck；notified=true 说明
 #    发现异常且已 wakeMainAgent；drift.differing 非空即三副本未同步，需重跑上面的 deliver-three-copies.mjs；
 #    详见 docs/CC-HYBRID.md §16）
+#    唤醒是否被响应看该响应的 wakeLedger 字段（ccfeat-20260915-wakeledger；进程内状态，重启后清空为
+#    []，属预期；同一宿主生命周期内每条记录的 outcomes 在下一轮心跳结算后应变为 changed/unchanged/gone，
+#    长期停留 {} 说明尚未到下一轮心跳，不是异常；详见 docs/CC-HYBRID.md §18）
 ```
 
 - 面板白屏≠故障：先清该站点数据再判断（lesson L-2026-0913-057）。
