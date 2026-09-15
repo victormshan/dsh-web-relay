@@ -298,3 +298,71 @@ test('切片守卫: 锚点字面量出现在源码中较早位置时，必须取
   assert.equal(sliceHandlerSource(''), '')
   assert.equal(sliceHandlerSource('无锚点'), '')
 })
+
+// ---- ccfeat-20260916-chainstats-b: /health-check 接线 ccChainStats（与 ccStats 并列）----
+// 编码通道（链条派发）统计接线：把 A4a（lib/cc-stats.mjs 的 loadChainTaskResults +
+// summarizeChainTasks）挂到 /health-check，并让 ccChainStats 进入既有重启自检契约。
+// 下面 4 条用例均对**真实源码**断言（而非内存 fake），理由同上方端到端契约用例——
+// 这类"字段是否真的接线到位"的缺陷，只喂内存 fake 的纯函数用例测不出来。
+
+test('契约清单: SELFCHECK_REQUIRED_HEALTH_FIELDS 包含 ccChainStats，且紧跟在 ccStats 之后', () => {
+  const idx = SELFCHECK_REQUIRED_HEALTH_FIELDS.indexOf('ccChainStats')
+  assert.ok(idx !== -1, 'SELFCHECK_REQUIRED_HEALTH_FIELDS 未包含 ccChainStats——新字段不会被重启自检自动校验')
+  assert.equal(
+    SELFCHECK_REQUIRED_HEALTH_FIELDS[idx - 1],
+    'ccStats',
+    'ccChainStats 未紧跟在 ccStats 之后，清单可读性变差（应与审核通道字段相邻，便于对照）'
+  )
+})
+
+test('端到端契约: 真实 lib/index.js 的 healthCheckHandler 切片必须暴露 ccChainStats（而非只在 collectHeavyHealth 里出现）', () => {
+  const indexPath = fileURLToPath(new URL('../lib/index.js', import.meta.url))
+  const src = readFileSync(indexPath, 'utf8')
+  const sliced = sliceHandlerSource(src)
+  assert.ok(sliced.length > 500, `health handler 切片过短（${sliced.length} 字符）`)
+  assert.ok(
+    sliced.includes('ccChainStats'),
+    'healthCheckHandler 源码切片内未找到 ccChainStats——字段可能只加到了 collectHeavyHealth，未真正接到响应体'
+  )
+  assert.match(
+    sliced,
+    /ccChainStats:\s*heavy\.ccChainStats/,
+    'healthCheckHandler 响应体未见 "ccChainStats: heavy.ccChainStats" 赋值'
+  )
+})
+
+test('源码契约: healthHeavyEmpty 缓存空态补了 ccChainStats: null（与命中缓存时的返回体形状一致）', () => {
+  const indexPath = fileURLToPath(new URL('../lib/index.js', import.meta.url))
+  const src = readFileSync(indexPath, 'utf8')
+  const start = src.indexOf('const healthHeavyEmpty = () => ({')
+  assert.ok(start !== -1, '未找到 healthHeavyEmpty 定义，缓存空态兜底函数可能被移除或改名')
+  const end = src.indexOf('async function collectHeavyHealth', start)
+  const body = end === -1 ? src.slice(start, start + 2000) : src.slice(start, end)
+  assert.match(body, /ccStats:\s*null/, 'healthHeavyEmpty 缺少既有 ccStats: null 兜底（不应被本次改动误删）')
+  assert.match(body, /ccChainStats:\s*null/, 'healthHeavyEmpty 未补 ccChainStats: null——重启后首探（未命中缓存）与命中缓存两种情形返回体形状会不一致')
+})
+
+test('源码契约: collectHeavyHealth 读取 ccChainStats 时 fail-open（异常一律置 null，不得让 /health-check 500）', () => {
+  const indexPath = fileURLToPath(new URL('../lib/index.js', import.meta.url))
+  const src = readFileSync(indexPath, 'utf8')
+  const start = src.indexOf('async function collectHeavyHealth')
+  assert.ok(start !== -1, '未找到 collectHeavyHealth 定义')
+  const end = src.indexOf('function heavyHealth', start)
+  const body = end === -1 ? src.slice(start, start + 6000) : src.slice(start, end)
+  assert.match(
+    body,
+    /let ccChainStats = null\s*\n\s*try\s*\{[\s\S]*?\}\s*catch\s*\([^)]*\)\s*\{\s*ccChainStats = null\s*\}/,
+    'collectHeavyHealth 内的 ccChainStats 聚合未见 try/catch fail-open 写法——读取/聚合异常可能未兜底为 null，会让 /health-check 500'
+  )
+  assert.match(
+    body,
+    /loadChainTaskResults\(/,
+    'collectHeavyHealth 未调用 loadChainTaskResults——应复用 A4a 的读取器，不得另立聚合'
+  )
+  assert.match(
+    body,
+    /summarizeChainTasks\(/,
+    'collectHeavyHealth 未调用 summarizeChainTasks——应复用 A4a 的聚合函数，不得另立分类'
+  )
+  assert.match(body, /return\s*\{[^}]*ccChainStats[^}]*\}/, 'collectHeavyHealth 的返回体未包含 ccChainStats')
+})

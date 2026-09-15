@@ -704,3 +704,72 @@ resume-circuit-paused 任一均不抑制」、「多项中仅一项含额外信�
 - 台账 `suppressed` 记录目前未在 `/health-check` 响应体做专门的独立字段暴露（沿用既有 `wakeLedger` 字段，
   抑制记录与正常唤醒记录混在同一数组里，靠 `suppressed` 字段区分）；如需在监控面板单独统计「抑制次数」，
   需要后续任务在 `/health-check` 聚合层新增派生字段，本任务未做（不在写入范围内的改动）。
+
+## 21. 编码通道统计接线：`/health-check` 新增 `ccChainStats`（ccfeat-20260916-chainstats-b）
+
+### 21.1 背景：`ccStats` 只统计审核通道，编码通道此前完全不可观测
+
+`lib/index.js` 里全部 6 处 `recordCcStat` 调用点 `kind` 都固定是 `'review'`（relay 自己派发审核任务
+的路径，见 `runCcReviewTask`），也就是说既有 `/health-check` 的 `ccStats` 字段（`recordCcOutcome` /
+`summarizeCcStats`，见 §10.3）**只统计「审核通道」**——链条/主 agent 直接派发的编码类任务
+（`implement`/`fix`/`feat`，结果落在 `D:\cc-tasks\tasks\<id>\result.json`）此前没有任何聚合，
+「编码通道到底稳不稳」无法回答。
+
+上一轮拆成两个任务补齐：
+- **ccfeat-20260916-chainstats-a**（纯逻辑层，已落地）：`lib/cc-stats.mjs` 新增两个纯函数/IO 注入函数——
+  `summarizeChainTasks(results, { now, windowMs })`（聚合）与
+  `loadChainTaskResults({ root, fsImpl, limit, now })`（有界读取器，只扫最近 100 个任务目录），
+  分类复用既有 `classifyCcFailure`。
+- **ccfeat-20260916-chainstats-b**（本节，接线层）：把上面两个函数挂到 `/health-check`，
+  并让新字段进入既有重启自检契约（§16）——**未重写任何纯逻辑**。
+
+### 21.2 语义：与 `ccStats`（审核通道）并列，互不覆盖
+
+`/health-check` 响应体新增 `ccChainStats` 字段，与既有 `ccStats` 字段并列暴露（`lib/index.js`
+`healthCheckHandler`）：
+
+```js
+ccStats: heavy.ccStats,          // 审核通道：relay 自己派发的 review 任务（kind:'review'）
+ccChainStats: heavy.ccChainStats, // 编码通道：链条/主 agent 派发的编码任务（implement/fix/feat）
+```
+
+两者统计口径完全独立——`ccStats` 的数据源是 `cc-stats.json`（`recordCcStat` 累积写入），
+`ccChainStats` 的数据源是 `D:\cc-tasks\tasks\*\result.json`（`loadChainTaskResults` 直接读取，
+不经过 `recordCcStat`，本次改动**未新增、未改动任何 `recordCcStat` 调用点**）。返回形状见
+`summarizeChainTasks` 的 JSDoc：`{ total, ok, failed, markerMissing, byFailure, byStatus,
+successRate, avgElapsedMs, recent }`。
+
+### 21.3 `cc-marker-missing` 单列：产物完好只是没写完成标记，不得混入 `failed`
+
+`byFailure`/`failed` 计数**不包含** `errorCode==='cc-marker-missing'` 的任务——该分类下产物本身完好，
+只是没有写完成标记文件，多次独立验收已确认这是「误报」而非真失败。这类任务单独计入
+`markerMissing` 字段，不进入 `byFailure`，避免污染 `/health-check` 的降级判断（详见 §10.5 的
+`cc-marker-missing` 历史背景，`summarizeChainTasks` 复用同一分类语义）。
+
+### 21.4 有界读取 + TTL 缓存：接线绝不引入请求路径内的无缓存重扫
+
+`ccChainStats` 的聚合挂在既有 `collectHeavyHealth()`（`lib/index.js`，约 L2280 起）内，随
+`heavyHealth()` 的 TTL 缓存机制一起工作（缓存窗口 `DSH_RELAY_HEALTH_CACHE_MS`，默认
+15000ms，见 §7/环境开关清单）：缓存命中时 `/health-check` 直接回内存字段（毫秒级），
+过期时回旧值并在后台异步刷新（`.then()`/`.catch()`），**探针请求本身绝不等待一次新的磁盘扫描**。
+这与 §10（watchdog 探针 fail-open 修复）确立的机制完全一致，是「探针绝不被扫描阻塞」的硬约束来源。
+
+`loadChainTaskResults` 本身只扫最近 100 个任务目录（`CHAIN_TASKS_LIMIT_DEFAULT`），不是无界扫描；
+接线时额外用 `try/catch` 整体包裹聚合调用，任何异常（目录不可访问、单文件损坏、聚合函数抛出等）
+一律 fail-open 为 `ccChainStats: null`，绝不让 `/health-check` 因此返回非 200。
+
+`healthHeavyEmpty()`（缓存尚未产生首个值时的兜底形状）同步补了 `ccChainStats: null`，
+使「重启后首探」与「命中缓存」两种情形返回体形状保持一致。
+
+### 21.5 自检契约
+
+`lib/selfcheck.mjs` 的 `SELFCHECK_REQUIRED_HEALTH_FIELDS`（见 §16）新增列 `'ccChainStats'`
+（紧跟在 `'ccStats'` 之后），使其随既有「重启后自检」自动校验——若后人不慎从
+`healthCheckHandler` 里删掉这个字段，下次重启会被自检钩子捕获，而不是静默漂移。
+
+### 21.6 性能实测
+
+`/health-check` 走的是 TTL 缓存路径，`ccChainStats` 聚合只在缓存过期时的**后台**刷新协程里执行一次，
+不阻塞探针请求本身；真正决定探针耗时的是缓存命中路径（内存字段直读）。实测数字与结论见
+本任务报告 `out/report.md` §性能实测（对比加入该字段前后 `/health-check` 耗时中位数/最大值，
+并核对未接近 watchdog 探针超时阈值）。
