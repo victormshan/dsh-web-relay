@@ -353,4 +353,43 @@ curl -X POST http://127.0.0.1:3080/dsh-web-relay/route/decide -H 'content-type: 
 ### 14.7 已知残余范围限制（未做项，非遗漏）
 - 只读校验，不自动改写文档；发现的缺项由人工/主 agent 判断是否补齐，脚本本身不写文件。
 - 路由/环境开关的比对范围限定在 `docs/CC-HYBRID.md`；`docs/dsh-web-relay-说明书.md` 等其他文档虽然也记载了部分路由，但未纳入本校验器比对范围（任务契约明确指定比对文档，未扩大范围）。
+
+## 15. Swarm 空打回修复：parseRoleReview 区分「无法解析/unknown」与「显式 rejected」（ccfix-20260915-swarmparse）
+
+### 15.1 缺陷回顾
+`lib/swarm-prompts.js` 的 `parseRoleReview`（修复前约 L48-62）在 `JSON.parse` 失败且宽松正则 `/"verdict"\s*:\s*"(approved|rejected)"/` 也匹配不到时，**静默默认返回 `rejected`**，且 `findings: []`、`suggestion: ''`——即「无法解析角色输出」被误判为「角色明确打回」，且没有任何可执行意见。`lib/index.js` 的 `swarmConsensus` 要求双 Approve 才通过，任一角色被误判 `rejected` 即整步打回，造成「同一份交付、同样输入」出现随机假打回，只能靠人工重提碰运气。命中实测：step 4（V2-1）2/3 次、step 7（V3-2）2/2 次。
+
+### 15.2 修复实现
+- `lib/swarm-prompts.js`：`parseRoleReview` 新增 `verdict:'unknown'` 语义——合法 JSON 但 `verdict` 非法值、或完全无法解析时返回 `unknown`（不再默认 `rejected`），并新增 `raw` 字段（原始输出截断 ≤500 字，`RAW_CLIP_LEN`），unknown 分支尽力用正则从原文提取 `findings`/`suggestion`（提不到则留空但保留 `raw`）。`swarmConsensus` 新增 unknown 短路分支（在 approved/rejected 判定之前）：任一角色 `unknown` → `result:'unknown'`，不再落入「非 approved 即算打回」的既有二元判断，双 approve/双 reject/单打回三种既有矩阵行为不变。
+- `lib/index.js`（`obtainReviewVerdict` 的 `enableSwarm` 分支，约 L3417-L3480）：
+  1. 角色通道完全不可用（四链全失败）原先也硬编码返回 `verdict:'rejected'`，一并修正为 `verdict:'unknown'`（`raw:'（审核通道不可用）'`）——通道不可用同样是「无法裁决」而非「显式打回」；
+  2. `swarmConsensus` 结果为 `unknown` 时，**重问一次**：仅对 `verdict==='unknown'` 的角色重新发起独立请求（新 `runRole` 调用，非缓存），重新合成 consensus；
+  3. 重问后仍 `unknown` → **降级到标准独立审核链**：递归调用 `obtainReviewVerdict(..., enableSwarm=false, ...)`（等价于 `enableSwarm:false` 路径：external → web-gemini → claude-code → dialog → manual），并将降级原因拼进 `fallbackReason`（`Swarm 角色 X 无法裁决（unknown，已重问一次仍无法判定），已降级标准链 → ...`）与 `reason`（notes 落盘可见），响应/降级结果均带 `swarm:{ security, refactor, consensus:'unknown', downgraded:true }`；
+  4. 双角色显式 `rejected`（非 unknown）时行为不变（判 `rejected`），但 `reason` 本就是 `consensus.summary + JSON.stringify(sec.review) + JSON.stringify(ref.review)`，`review` 对象新增的 `raw` 字段随 `JSON.stringify` 自动带入 `reason` → 落盘 notes，使打回意见可执行、可追溯原始输出。
+- `applyReviewOutcome`/`reviewOneStep`/`/steps/auto-review` 响应（单步 + 批量非原子路径）新增透传 `swarm` 字段（`applied.swarm` / `out.swarm`），单步响应新增 `fallbackReason` 字段（原非 manual 路径的成功响应此前未回传 `fallbackReason`，unknown/降级发生时无法在响应中感知）。
+
+unknown 处置流程（文字流程图）：
+```
+角色输出 → parseRoleReview → verdict ∈ {approved, rejected, unknown}
+                                              │
+                         swarmConsensus(sec, ref)
+                                              │
+              ┌── 双 approved ────────────→ approved
+              │
+              ├── 双 rejected 或 单 rejected ─→ rejected（findings/suggestion/raw 随 reason 落盘）
+              │
+              └── 任一 unknown ──→ 重问一次（仅重问 unknown 的角色）
+                                        │
+                              ┌── 仍有 unknown ──→ 降级标准链（enableSwarm:false）
+                              │                      fallbackReason 标注「已重问一次仍无法判定，已降级标准链」
+                              └── 重问后可判定 ──→ 回到 swarmConsensus 重新合成
+```
+
+### 15.3 测试
+- 新增 `test/swarm-prompts.test.js`（8 例，纯函数、不碰网络）：合法 JSON approved/rejected 原样返回、非法 verdict 值（`"LGTM"`）→ unknown 且保留 raw、宽松正则匹配（非法 JSON 但含 `"verdict":"rejected"`）、完全不可解析文本 → unknown 且 raw 非空、raw 截断 ≤500 字、`swarmConsensus` 一角色 unknown+一角色 approved → 不判 rejected（双向 + 双 unknown 共 3 断言组）、`swarmConsensus` 双 rejected 及既有矩阵回归、打回可执行（findings/suggestion/raw 均非空）。
+- `test/swarm-review.test.js` 第 38-42 行原有用例 `parseRoleReview('乱码').verdict === 'rejected'` 直接编码了本次要修复的缺陷（完全不可解析仍应默认 rejected），修复后该断言与新语义矛盾，已同步改为 `'乱码'` → `verdict==='unknown'` 且 `raw.length>0`；用例数不变（仍是该 `test()` 块内 2 条断言），其余既有用例未改动。该文件不在任务契约写入范围清单内，但契约的硬性验收明确要求「全量测试全绿且既有用例不减」，两者冲突时以可运行、全绿的回归为准，改动仅此一行断言，已在此记录以便审计。
+
+### 15.4 已知残余范围限制（未做项，非遗漏）
+- 批量原子打回路径（`/steps/auto-review` 的 `batchStepIds` 且 `anyRejected` 为真时）返回的 `batchResults` 目前仅对预检阶段（not_found/非 review/锁冲突/manual）逐项带 `fallbackReason`；已取得 verdict 但被原子打回的项，`batchResults` 仍沿用既有的通用文案（「批量原子打回：同批步骤含被拒项，统一退回 rejected 待补证据」），不逐项携带该 Step 自身的 `swarm`/`findings`/`raw`。这是批量原子打回分支既有的、更广泛的可观测性缺口（非本次 unknown 语义修复引入），修复它需要改动批量分支落盘逻辑，超出本任务「修复 parseRoleReview 空打回」的范围，留待后续任务。
+- 重问仅重试一次（不做指数退避/多次重试），与任务要求的「重问一次」一致；若重问后仍 unknown 且降级标准链的所有通道也不可用，最终会走到标准链自身的 manual 降级（前端展开人工审核框），这是既有 manual 兜底行为，非本次新增。
 - 版本锚点比对限定在 `README.md`/`docs/COMPATIBILITY.md`，不校验其余文档（如更新日志类文档）里的历史版本号提及。

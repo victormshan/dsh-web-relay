@@ -37,7 +37,10 @@ test('parseRoleReview：严格 JSON 解析', () => {
 
 test('parseRoleReview：宽松兜底（非 JSON 文本提取 verdict）', () => {
   assert.equal(parseRoleReview('{"verdict":"approved"}').verdict, 'approved')
-  assert.equal(parseRoleReview('乱码').verdict, 'rejected')
+  // ccfix-20260915-swarmparse: 完全无法判定不再默认 rejected（原缺陷会造成空打回），改为 unknown 且保留 raw
+  const r = parseRoleReview('乱码')
+  assert.equal(r.verdict, 'unknown')
+  assert.ok(r.raw.length > 0)
 })
 
 test('buildRolePrompt：角色 Prompt 含焦点与 JSON 输出要求', () => {
