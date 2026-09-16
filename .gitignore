@@ -1,6 +1,11 @@
 # 运行数据（不进版本库）
-web-relay/experiments/
-web-relay/traces/
+# 2026-09-16 修正：原为 `web-relay/experiments/`——**含中间斜杠的模式锚定在仓库根**，
+# 因此当 relay 因未传 workspacePath 而以宿主 cwd（bin/）为基准落盘、生成 `bin/web-relay/` 时
+# 不被忽略 → `git status` 报 `?? bin/web-relay/` → 验收器把该目录当文件读 → EISDIR 崩溃 →
+# 链条判 REJECT → 因 verify-rejected 可重派而形成**每 20 分钟一次的重派循环**（实测 25 次）。
+# 改为 `**/` 前缀使其在**任意层级**生效，避免同类污染再次击穿验收器。
+**/web-relay/experiments/
+**/web-relay/traces/
 
 # 备份与临时产物
 *.bak*
