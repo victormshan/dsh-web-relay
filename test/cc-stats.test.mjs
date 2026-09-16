@@ -100,11 +100,18 @@ test('classifyCcFailure: cc-watchdog-stale 归类（含动态 ageMs 后缀），
   assert.notEqual(r.category, 'timeout');
 });
 
-test('classifyCcFailure: 真实 timeout（runner.sh exit=124/900s 硬超时）仍归类为 timeout，不受新规则影响', () => {
+test('classifyCcFailure: 真实 timeout（900s 硬超时提示语，无 exit=124 字样）仍归类为 timeout', () => {
   const r1 = classifyCcFailure('执行超时，900s 上限已到');
-  const r2 = classifyCcFailure('claude exit=124 超时');
   assert.equal(r1.category, 'timeout');
-  assert.equal(r2.category, 'timeout');
+});
+
+// ccfix-20260916-fallback-classify: exit=124 从泛化 timeout 桶移入 cc-timeout 桶——此前
+// 'claude exit=124 超时' 落 timeout、errorCode='cc-timeout' 的同类失败落 cc-timeout，
+// 同一失败模式分裂两桶，使「超时几次」无法用单一数字回答；现统一归 cc-timeout。
+test('classifyCcFailure: exit=124（runner.sh 900s 硬超时 kill 的退出码）归入 cc-timeout，不再是 timeout', () => {
+  const r = classifyCcFailure('claude exit=124 超时');
+  assert.equal(r.category, 'cc-timeout');
+  assert.notEqual(r.category, 'timeout');
 });
 
 // ccfix-20260914-stats: 补齐 cc-quota-exhausted / cc-permission-denied / cc-timeout 三类
@@ -142,7 +149,67 @@ test('classifyCcFailure: cc-timeout（errorCode 直传路径文本）归类，�
   assert.notEqual(r.category, 'timeout-still-running');
 });
 
-test('recordCcOutcome: 混合 reason 输入 → cc-quota-exhausted / cc-permission-denied / cc-timeout / timeout 各桶计数互斥且总数相等', () => {
+// ccfix-20260916-fallback-classify: runner.sh 真实写出的 reason 是**等号形态**
+// （'claude exit=1; done.flag=missing'），此前 done.flag 子模式要求空白分隔、exit 子模式
+// 只认 ≠/!=，对等号形态恒不命中，errorCode 为空的行一律落 unknown。以下 8 组用例覆盖
+// 主 agent 对 D:\cc-tasks\tasks\*\result.json 取证到的真实文本形态。
+
+test('classifyCcFailure: 等号形态 exit=0 + done.flag=missing → cc-marker-missing（claude 自身成功，不得算 runner-failed）', () => {
+  const r = classifyCcFailure('claude exit=0; done.flag=missing');
+  assert.equal(r.category, 'cc-marker-missing');
+  assert.notEqual(r.category, 'runner-failed');
+});
+
+test('classifyCcFailure: 等号形态 exit=1 + done.flag=missing → runner-failed', () => {
+  const r = classifyCcFailure('claude exit=1; done.flag=missing');
+  assert.equal(r.category, 'runner-failed');
+});
+
+test('classifyCcFailure: 等号形态 exit=124 + done.flag=missing → cc-timeout（不得落回泛化 timeout 桶）', () => {
+  const r = classifyCcFailure('claude exit=124; done.flag=missing');
+  assert.equal(r.category, 'cc-timeout');
+  assert.notEqual(r.category, 'timeout');
+});
+
+test('classifyCcFailure: errorCode 与 reason 合并文本 "cc-failed claude exit=0; done.flag=missing" → cc-marker-missing（不被 \\bcc-failed\\b 抢先命中 runner-failed）', () => {
+  const r = classifyCcFailure('cc-failed claude exit=0; done.flag=missing');
+  assert.equal(r.category, 'cc-marker-missing');
+});
+
+test('classifyCcFailure: errorCode 与 reason 合并文本 "cc-timeout claude exit=124; done.flag=missing" → cc-timeout（保持原结果）', () => {
+  const r = classifyCcFailure('cc-timeout claude exit=124; done.flag=missing');
+  assert.equal(r.category, 'cc-timeout');
+});
+
+test('classifyCcFailure: errorCode 与 reason 合并文本 "cc-quota-exhausted claude exit=1; done.flag=missing" → cc-quota-exhausted（quota 规则仍前置，保持原结果）', () => {
+  const r = classifyCcFailure('cc-quota-exhausted claude exit=1; done.flag=missing');
+  assert.equal(r.category, 'cc-quota-exhausted');
+});
+
+test('classifyCcFailure（回归保护）: 空格形态 "done.flag missing"（不含等号）仍能被识别，不落入 unknown', () => {
+  const r = classifyCcFailure('done.flag missing');
+  assert.notEqual(r.category, 'unknown');
+});
+
+test('classifyCcFailure（负例）: "claude exit=0; 正常完成" 不含 done.flag 字样 → 不得落入任何失败桶（unknown）', () => {
+  const r = classifyCcFailure('claude exit=0; 正常完成');
+  assert.equal(r.category, 'unknown');
+});
+
+test('classifyCcFailure（负例）: exit=0 但无 done.flag 字样 → 不得落入 cc-marker-missing', () => {
+  const r = classifyCcFailure('claude exit=0; 输出未包含标记字样');
+  assert.notEqual(r.category, 'cc-marker-missing');
+  assert.equal(r.category, 'unknown');
+});
+
+test('recordCcOutcome: errorCode 与 reason 一并纳入判定 → errorCode="cc-failed" + reason="claude exit=0; done.flag=missing" 落 cc-marker-missing（此前 reason 被完全忽略、误判为 runner-failed）', () => {
+  let stats = undefined;
+  stats = recordCcOutcome(stats, { taskId: 't1', kind: 'implement', ok: false, elapsedMs: 100, errorCode: 'cc-failed', reason: 'claude exit=0; done.flag=missing' });
+  assert.equal(stats.byFailure['cc-marker-missing'], 1);
+  assert.equal(stats.byFailure['runner-failed'], undefined);
+});
+
+test('recordCcOutcome: 混合 reason 输入 → cc-quota-exhausted / cc-permission-denied / cc-timeout 各桶计数互斥且总数相等（exit=124 与字面量 cc-timeout 同桶）', () => {
   let stats = undefined;
   stats = recordCcOutcome(stats, { taskId: 't1', kind: 'review', ok: false, elapsedMs: 100, reason: 'cc-quota-exhausted' });
   stats = recordCcOutcome(stats, { taskId: 't2', kind: 'review', ok: false, elapsedMs: 100, reason: 'session limit reached' });
@@ -154,8 +221,8 @@ test('recordCcOutcome: 混合 reason 输入 → cc-quota-exhausted / cc-permissi
 
   assert.equal(stats.byFailure['cc-quota-exhausted'], 2);
   assert.equal(stats.byFailure['cc-permission-denied'], 2);
-  assert.equal(stats.byFailure['cc-timeout'], 1);
-  assert.equal(stats.byFailure.timeout, 1);
+  assert.equal(stats.byFailure['cc-timeout'], 2, 't5(字面量 cc-timeout) + t6(exit=124) 应同桶');
+  assert.equal(stats.byFailure.timeout, undefined, 'exit=124 不应再落入泛化 timeout 桶');
   assert.equal(stats.failed, 6);
 
   const failureBucketSum = Object.values(stats.byFailure).reduce((a, b) => a + b, 0);
@@ -192,12 +259,13 @@ test('recordCcOutcome: byKind 分组正确', () => {
   assert.deepEqual(stats.byKind.review, { total: 1, ok: 1, failed: 0 });
 });
 
-test('recordCcOutcome: byFailure 按分类计数', () => {
+test('recordCcOutcome: byFailure 按分类计数（exit=124 归 cc-timeout，与泛化 timeout 分桶）', () => {
   let stats = undefined;
   stats = recordCcOutcome(stats, { taskId: 't1', kind: 'implement', ok: false, elapsedMs: 900000, reason: '超时 900s' });
   stats = recordCcOutcome(stats, { taskId: 't2', kind: 'implement', ok: false, elapsedMs: 900000, reason: 'exit=124 超时' });
   stats = recordCcOutcome(stats, { taskId: 't3', kind: 'implement', ok: false, elapsedMs: 10, reason: '产物缺失' });
-  assert.equal(stats.byFailure.timeout, 2);
+  assert.equal(stats.byFailure.timeout, 1);
+  assert.equal(stats.byFailure['cc-timeout'], 1);
   assert.equal(stats.byFailure['artifact-missing'], 1);
 });
 
@@ -205,7 +273,7 @@ test('recordCcOutcome: byFailure 区分 timeout-still-running / cc-watchdog-stal
   let stats = undefined;
   stats = recordCcOutcome(stats, { taskId: 't1', kind: 'review', ok: false, elapsedMs: 150000, reason: 'timeout-still-running' });
   stats = recordCcOutcome(stats, { taskId: 't2', kind: 'review', ok: false, elapsedMs: 0, reason: 'cc-watchdog-stale:200000' });
-  stats = recordCcOutcome(stats, { taskId: 't3', kind: 'implement', ok: false, elapsedMs: 900000, reason: 'claude exit=124 超时' });
+  stats = recordCcOutcome(stats, { taskId: 't3', kind: 'implement', ok: false, elapsedMs: 900000, reason: '执行超时，900s 上限已到' });
   assert.equal(stats.byFailure['timeout-still-running'], 1);
   assert.equal(stats.byFailure['cc-watchdog-stale'], 1);
   assert.equal(stats.byFailure.timeout, 1);
@@ -333,13 +401,58 @@ test('summarizeChainTasks: failed 且无 errorCode/reason → 计入 failed 且�
   assert.equal(s.markerMissing, 0);
 });
 
-test('summarizeChainTasks: errorCode=cc-failed → 归入 runner-failed 桶（runner.sh 通用兜底 errorCode，语义等价 exit≠0）', () => {
+test('summarizeChainTasks: errorCode=cc-failed 且 reason 无信息量 → 归入 runner-failed 桶（runner.sh 通用兜底 errorCode，语义等价 exit≠0）', () => {
   const s = summarizeChainTasks(
-    [{ taskId: 't1', status: 'failed', start: '2026-09-16T10:00:00Z', errorCode: 'cc-failed', reason: 'claude exit=0; done.flag=missing' }],
+    [{ taskId: 't1', status: 'failed', start: '2026-09-16T10:00:00Z', errorCode: 'cc-failed', reason: 'unexpected script error' }],
     { now: NOW },
   );
   assert.equal(s.failed, 1);
   assert.equal(s.byFailure['runner-failed'], 1);
+});
+
+// ccfix-20260916-fallback-classify: errorCode='cc-failed' 且 reason='claude exit=0;
+// done.flag=missing' 此前被单独看 errorCode（reason 完全被忽略）误判为 runner-failed
+// （「代码写坏了」），而真实语义是「claude 自身 exit=0，只是没写完成标记」——这类记录
+// 经取证均产出了落在 main 上的提交，即把成功算成了失败。现两个字段一并纳入判定后，
+// 应正确落回 markerMissing（结构上与 failed 互斥），不再计入 failed/byFailure。
+test('summarizeChainTasks: errorCode=cc-failed + reason=claude exit=0; done.flag=missing → 合并判定后落 markerMissing，不计入 failed（此前误判为 runner-failed）', () => {
+  const s = summarizeChainTasks(
+    [{ taskId: 't1', status: 'failed', start: '2026-09-16T10:00:00Z', errorCode: 'cc-failed', reason: 'claude exit=0; done.flag=missing' }],
+    { now: NOW },
+  );
+  assert.equal(s.failed, 0);
+  assert.equal(s.markerMissing, 1);
+  assert.deepEqual(s.byFailure, {});
+});
+
+test('summarizeChainTasks: errorCode 为空、reason=claude exit=1; done.flag=missing（等号形态）→ 归入 runner-failed，不再落 unknown', () => {
+  const s = summarizeChainTasks(
+    [{ taskId: 't1', status: 'failed', start: '2026-09-16T10:00:00Z', reason: 'claude exit=1; done.flag=missing' }],
+    { now: NOW },
+  );
+  assert.equal(s.failed, 1);
+  assert.equal(s.byFailure['runner-failed'], 1);
+});
+
+test('summarizeChainTasks: errorCode 为空、reason=claude exit=124; done.flag=missing（等号形态）→ 归入 cc-timeout，不再落 unknown/timeout', () => {
+  const s = summarizeChainTasks(
+    [{ taskId: 't1', status: 'failed', start: '2026-09-16T10:00:00Z', reason: 'claude exit=124; done.flag=missing' }],
+    { now: NOW },
+  );
+  assert.equal(s.failed, 1);
+  assert.equal(s.byFailure['cc-timeout'], 1);
+  assert.equal(s.byFailure.unknown, undefined);
+  assert.equal(s.byFailure.timeout, undefined);
+});
+
+test('summarizeChainTasks: errorCode 为空、reason=claude exit=0; done.flag=missing（等号形态）→ 归入 markerMissing，不再落 unknown', () => {
+  const s = summarizeChainTasks(
+    [{ taskId: 't1', status: 'failed', start: '2026-09-16T10:00:00Z', reason: 'claude exit=0; done.flag=missing' }],
+    { now: NOW },
+  );
+  assert.equal(s.failed, 0);
+  assert.equal(s.markerMissing, 1);
+  assert.deepEqual(s.byFailure, {});
 });
 
 test('summarizeChainTasks: errorCode=cc-marker-missing → 单列 markerMissing，不计入 failed、不进入 byFailure（核心用例）', () => {
