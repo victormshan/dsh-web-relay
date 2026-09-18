@@ -6,12 +6,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
+import os from "node:os";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import {
   TASK_SCHEMA_V2,
   validateTask,
   validateResultText,
   validateResult,
   runAcceptanceScript,
+  buildInvocation,
   classifyTaskRecovery,
   recoveryAction,
   summarizeValidation,
@@ -317,41 +320,250 @@ test("validateResult: 自定义 outputDir 时 expectArtifacts 相对该目录解
 });
 
 // ---------- runAcceptanceScript ----------
+//
+// 两种形态：
+//   ① 脚本 token（单 token、无空白/无 shell 元字符、以 .mjs/.cjs/.js 结尾）→ node 执行，
+//      相对路径按 仓库根 → 任务目录 顺序解析，taskId 作为第一个参数传入。
+//   ② 命令形态（其余情况）→ 保持 /bin/sh -c 语义，不得回归。
+// 三类结局：exit 0 → kind "ok"；exit 1..126 → kind "fail"（错误带 [FAIL] 标记）；
+//   ENOENT/127/超时/无法启动 → kind "instrument"（错误带 [INSTRUMENT] 标记）。
 
-test("runAcceptanceScript: exec 成功（exit 0）→ ok true", () => {
+/** 建一个临时目录夹具：{ repoRoot, taskDir }（各自独立子目录，模拟仓库根与任务目录）。 */
+function makeFixtureDirs() {
+  const root = mkdtempSync(path.join(os.tmpdir(), "tsv2-fixture-"));
+  const repoRoot = path.join(root, "repo");
+  const taskDir = path.join(root, "task");
+  mkdirSync(repoRoot, { recursive: true });
+  mkdirSync(taskDir, { recursive: true });
+  return { root, repoRoot, taskDir };
+}
+
+test("runAcceptanceScript: 命令形态（其余情况）走 /bin/sh -c，不回归", () => {
   const calls = [];
-  const exec = (script, cwd) => {
-    calls.push([script, cwd]);
-    // 不抛错即视为 exit 0
+  const exec = (invocation) => {
+    calls.push(invocation);
+    return { status: 0, signal: null };
   };
-  const { ok, error } = runAcceptanceScript({
+  const { ok, kind, error } = runAcceptanceScript({
     script: "echo hi",
     cwd: "/tmp",
+    taskId: "tid-cmd",
+    repoRoot: "/repo",
     exec,
   });
   assert.equal(ok, true);
+  assert.equal(kind, "ok");
   assert.equal(error, undefined);
-  assert.deepEqual(calls, [["echo hi", "/tmp"]]);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].command, "/bin/sh");
+  assert.deepEqual(calls[0].args, ["-c", "echo hi"]);
+  assert.equal(calls[0].cwd, path.resolve("/tmp"));
 });
 
-test("runAcceptanceScript: exec 抛错（非 0 退出）→ ok false 带 error", () => {
-  const exec = () => {
-    throw new Error("Command failed with exit code 1");
-  };
-  const { ok, error } = runAcceptanceScript({ script: "exit 1", exec });
+test("runAcceptanceScript: 命令形态 exit 1..126（探针跑完给出否定）→ kind fail 带 [FAIL] 标记", () => {
+  const exec = () => ({ status: 1, signal: null, stderr: "assertion failed" });
+  const { ok, kind, error } = runAcceptanceScript({ script: "exit 1", cwd: "/tmp", exec });
   assert.equal(ok, false);
-  assert.equal(error, "Command failed with exit code 1");
+  assert.equal(kind, "fail");
+  assert.ok(error.startsWith("[acceptance-script][FAIL]"));
+  assert.ok(error.includes("assertion failed"));
 });
 
-test("runAcceptanceScript: script 为空字符串直接报错，不调用 exec", () => {
+test("runAcceptanceScript: script 为空字符串 → kind instrument，不调用 exec", () => {
   let called = false;
   const exec = () => {
     called = true;
+    return { status: 0 };
   };
-  const { ok, error } = runAcceptanceScript({ script: "  ", exec });
+  const { ok, kind, error } = runAcceptanceScript({ script: "  ", exec });
   assert.equal(ok, false);
+  assert.equal(kind, "instrument");
   assert.equal(called, false);
+  assert.ok(error.startsWith("[acceptance-script][INSTRUMENT]"));
   assert.ok(error.includes("script"));
+});
+
+test("runAcceptanceScript: 两种形态都向子进程注入 DSH_TASK_ID/DSH_TASK_DIR/DSH_REPO", () => {
+  const calls = [];
+  const exec = (invocation) => {
+    calls.push(invocation);
+    return { status: 0 };
+  };
+  runAcceptanceScript({ script: "echo hi", cwd: "/tmp/taskdir", taskId: "tid-env", repoRoot: "/tmp/repo", exec });
+  assert.equal(calls[0].env.DSH_TASK_ID, "tid-env");
+  assert.equal(calls[0].env.DSH_TASK_DIR, path.resolve("/tmp/taskdir"));
+  assert.equal(calls[0].env.DSH_REPO, path.resolve("/tmp/repo"));
+});
+
+test("runAcceptanceScript: 脚本 token 形态真实执行 node，exit 0 → ok true，探针能读到 taskId 参数与 DSH_TASK_ID", () => {
+  const { root, repoRoot, taskDir } = makeFixtureDirs();
+  try {
+    const probePath = path.join(taskDir, "probe.mjs");
+    writeFileSync(
+      probePath,
+      "const okArg = process.argv[2] === 'tid-real-1';\n" +
+        "const okEnv = process.env.DSH_TASK_ID === 'tid-real-1';\n" +
+        "process.exit(okArg && okEnv ? 0 : 1);\n",
+      "utf8"
+    );
+    const { ok, kind, error } = runAcceptanceScript({
+      script: "probe.mjs",
+      cwd: taskDir,
+      taskId: "tid-real-1",
+      repoRoot,
+    });
+    assert.equal(ok, true);
+    assert.equal(kind, "ok");
+    assert.equal(error, undefined);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("runAcceptanceScript: 脚本 token 相对路径优先命中仓库根", () => {
+  const { root, repoRoot, taskDir } = makeFixtureDirs();
+  try {
+    mkdirSync(path.join(repoRoot, "probes"), { recursive: true });
+    writeFileSync(path.join(repoRoot, "probes", "p.mjs"), "process.exit(0);\n", "utf8");
+    const { ok, kind } = runAcceptanceScript({ script: "probes/p.mjs", cwd: taskDir, taskId: "t1", repoRoot });
+    assert.equal(ok, true);
+    assert.equal(kind, "ok");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("runAcceptanceScript: 脚本 token 相对路径回退命中任务目录（仓库根没有）", () => {
+  const { root, repoRoot, taskDir } = makeFixtureDirs();
+  try {
+    mkdirSync(path.join(taskDir, "probes"), { recursive: true });
+    writeFileSync(path.join(taskDir, "probes", "p.mjs"), "process.exit(0);\n", "utf8");
+    const { ok, kind } = runAcceptanceScript({ script: "probes/p.mjs", cwd: taskDir, taskId: "t1", repoRoot });
+    assert.equal(ok, true);
+    assert.equal(kind, "ok");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("runAcceptanceScript: 脚本 token 真实执行非 0 退出（1..126）→ kind fail", () => {
+  const { root, repoRoot, taskDir } = makeFixtureDirs();
+  try {
+    writeFileSync(path.join(taskDir, "fail.mjs"), "process.exit(3);\n", "utf8");
+    const { ok, kind, error } = runAcceptanceScript({ script: "fail.mjs", cwd: taskDir, taskId: "t1", repoRoot });
+    assert.equal(ok, false);
+    assert.equal(kind, "fail");
+    assert.ok(error.startsWith("[acceptance-script][FAIL]"));
+    assert.ok(error.includes("3"));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("runAcceptanceScript: 脚本 token 指向不存在文件 → kind instrument 且错误列出尝试过的绝对路径", () => {
+  const { root, repoRoot, taskDir } = makeFixtureDirs();
+  try {
+    const { ok, kind, error } = runAcceptanceScript({ script: "no-such-probe.mjs", cwd: taskDir, taskId: "t1", repoRoot });
+    assert.equal(ok, false);
+    assert.equal(kind, "instrument");
+    assert.ok(error.startsWith("[acceptance-script][INSTRUMENT]"));
+    assert.ok(error.includes(path.join(repoRoot, "no-such-probe.mjs")));
+    assert.ok(error.includes(path.join(taskDir, "no-such-probe.mjs")));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test(
+  "runAcceptanceScript: 命令形态命令不存在（真实 shell exit 127）→ kind instrument",
+  { skip: process.platform === "win32" ? "仅 POSIX 有 /bin/sh，win32 下命令形态被 buildInvocation 明确拒绝，不会走到真实 spawn" : false },
+  () => {
+    const { ok, kind, error } = runAcceptanceScript({
+      script: "definitely-not-a-real-command-xyz123",
+      cwd: "/tmp",
+      taskId: "t1",
+    });
+    assert.equal(ok, false);
+    assert.equal(kind, "instrument");
+    assert.ok(error.startsWith("[acceptance-script][INSTRUMENT]"));
+    assert.ok(error.includes("127"));
+  }
+);
+
+// ---------- buildInvocation（纯函数：命令形态平台分派，platform 为注入参数）----------
+
+test("buildInvocation: posix（非 win32）→ { ok:true, command:'/bin/sh', args:['-c', script] }", () => {
+  for (const platform of ["linux", "darwin", "freebsd"]) {
+    const invocation = buildInvocation({ script: "echo hi", platform });
+    assert.equal(invocation.ok, true);
+    assert.equal(invocation.command, "/bin/sh");
+    assert.deepEqual(invocation.args, ["-c", "echo hi"]);
+  }
+});
+
+test("buildInvocation: win32 → { ok:false, kind:'instrument' }，错误信息含不受支持 + 脚本 token 提示", () => {
+  const invocation = buildInvocation({ script: "echo hi", platform: "win32" });
+  assert.equal(invocation.ok, false);
+  assert.equal(invocation.kind, "instrument");
+  assert.ok(invocation.error.startsWith("[acceptance-script][INSTRUMENT]"));
+  assert.ok(invocation.error.includes("win32"));
+  assert.ok(invocation.error.includes("不受支持"));
+  assert.ok(invocation.error.includes("脚本 token"));
+});
+
+// ---------- runAcceptanceScript × 注入 platform（跨平台确定性覆盖，不依赖真实运行平台）----------
+
+test("runAcceptanceScript: 注入 platform='win32' + 命令形态 → kind instrument，不调用 exec（不 spawn /bin/sh）", () => {
+  let called = false;
+  const exec = () => {
+    called = true;
+    return { status: 0 };
+  };
+  const { ok, kind, error } = runAcceptanceScript({
+    script: "echo hi",
+    cwd: "/tmp",
+    taskId: "t1",
+    platform: "win32",
+    exec,
+  });
+  assert.equal(ok, false);
+  assert.equal(kind, "instrument");
+  assert.equal(called, false);
+  assert.ok(error.startsWith("[acceptance-script][INSTRUMENT]"));
+  assert.ok(error.includes("不受支持"));
+  assert.ok(error.includes("脚本 token"));
+});
+
+test("runAcceptanceScript: 注入 platform='linux' + 命令形态 → invocation 为 { command:'/bin/sh', args:['-c', script] }", () => {
+  const calls = [];
+  const exec = (invocation) => {
+    calls.push(invocation);
+    return { status: 0, signal: null };
+  };
+  const { ok, kind } = runAcceptanceScript({
+    script: "echo from-linux",
+    cwd: "/tmp",
+    taskId: "t1",
+    platform: "linux",
+    exec,
+  });
+  assert.equal(ok, true);
+  assert.equal(kind, "ok");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].command, "/bin/sh");
+  assert.deepEqual(calls[0].args, ["-c", "echo from-linux"]);
+});
+
+test("runAcceptanceScript: 注入 platform='win32' 时脚本 token 形态不受影响（两平台都可用）", () => {
+  const { root, repoRoot, taskDir } = makeFixtureDirs();
+  try {
+    writeFileSync(path.join(taskDir, "probe.mjs"), "process.exit(0);\n", "utf8");
+    const { ok, kind } = runAcceptanceScript({ script: "probe.mjs", cwd: taskDir, taskId: "t1", repoRoot, platform: "win32" });
+    assert.equal(ok, true);
+    assert.equal(kind, "ok");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 // ---- s2v2_1: ErrorCode 分类 ----

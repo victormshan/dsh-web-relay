@@ -9,6 +9,7 @@
 //       （s2v5_3: cc-watchdog REJECT 隔离（queue/.invalid/）人工复检闭环）
 // exit code: 0 通过 / 1 校验失败 / 2 用法错误
 import { readFileSync, readdirSync, existsSync, statSync, writeFileSync, renameSync, unlinkSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { validateTask, validateResultText, validateResult, runAcceptanceScript, classifyTaskRecovery, recoveryAction } from '../lib/task-schema-v2.mjs'
 
 const [, , cmd, target] = process.argv
@@ -16,6 +17,8 @@ function fail(msg, code = 2) { console.error(msg); process.exit(code) }
 if (!cmd || !target) fail('用法: task-schema-cli.mjs validate-task <task.json> | validate-result <taskDir> | report <taskDir|parentDir> | recover <tasksParentDir> | invalid list|revalidate|recover|clean <ccTasksRoot> [file]')
 
 const path = (await import('node:path')).default
+// acceptanceScript 脚本 token 形态的「仓库根」：本校验器所在仓库（dsh-web-relay）自身
+const REPO_ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 // BOM 防御（PS5.1 写 UTF8 带 BOM 会破坏 JSON.parse——lesson 004）
 const readJson = (p) => {
   let raw = readFileSync(p, 'utf8')
@@ -33,13 +36,15 @@ async function checkTaskDir(taskDir) {
   const textCheck = text ? validateResultText(text) : { ok: false, errors: ['result.json missing (pending?)'] }
   const r = await validateResult({ taskDir, task })
   // s2v2_3: acceptanceScript 内联执行（task.acceptanceScript 存在 → runAcceptanceScript）
+  // 结局三分：ok / fail（产物不合格，探针跑完给出否定）/ instrument（工具错误：文件缺失/超时/无法启动）
+  // 错误文本自带 [acceptance-script][FAIL] 或 [acceptance-script][INSTRUMENT] 标记，此处不再二次加前缀。
   let acceptance = null
   if (typeof task.acceptanceScript === 'string' && task.acceptanceScript.trim()) {
-    acceptance = runAcceptanceScript({ script: task.acceptanceScript, cwd: taskDir })
+    acceptance = runAcceptanceScript({ script: task.acceptanceScript, cwd: taskDir, taskId: task.taskId, repoRoot: REPO_ROOT })
   }
   const errors = [...r.errors, ...(textCheck.ok ? [] : textCheck.errors.filter(e => !r.errors.includes(e)))]
   const ok = r.ok && textCheck.ok && (!acceptance || acceptance.ok)
-  if (acceptance && !acceptance.ok) errors.push(`[acceptance-script] ${acceptance.error}`)
+  if (acceptance && !acceptance.ok) errors.push(acceptance.error)
   return {
     taskDir, ok, errors,
     doneFlagAtRoot: r.details.doneFlagAtRoot,
@@ -47,7 +52,7 @@ async function checkTaskDir(taskDir) {
     doneFlagErrorCode: r.details.doneFlagErrorCode ?? null,
     resultPending: r.details.resultPending,
     artifacts: r.details.artifacts,
-    acceptance: acceptance ? { ok: acceptance.ok, error: acceptance.error || null } : null
+    acceptance: acceptance ? { ok: acceptance.ok, kind: acceptance.kind, error: acceptance.error || null } : null
   }
 }
 
