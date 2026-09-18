@@ -455,3 +455,41 @@
   lastVerified: 2026-09-13
   status: approved
   version: 1
+
+- id: execution-grounded-gates
+  name: 执行接地门禁体系（③④⑤⑥ + 周期审计 + 变异负控 + 退出码语义）
+  category: tool
+  scope: dsh-web-relay-verification
+  source: docs/execution-grounded-gates.md
+  trigger: 需要判定「产物是否通过 / 宿主是否已加载新代码」，或为新门禁定纪律时
+  conflicts: []
+  verification:
+    - file-exists: docs/execution-grounded-gates.md
+    - content-contains:
+        file: docs/execution-grounded-gates.md
+        text: "四层审计"
+    - content-contains:
+        file: docs/main-agent-lessons.json
+        text: "L-2026-0919-075"
+  lastVerified: 2026-09-19
+  status: approved
+  version: 1
+
+- id: pending-human-escalation
+  name: 无人值守升级通路（需要人介入信号 → 唤醒主 agent → 销账；含稳定键去重与主槽+队列）
+  category: workflow
+  scope: dsh-web-relay-unattended
+  source: docs/execution-grounded-gates.md
+  trigger: 链条停下等人 / 周期审计失败 / 需要无人值守下自动叫醒主 agent 时
+  conflicts: []
+  verification:
+    - file-exists: docs/execution-grounded-gates.md
+    - content-contains:
+        file: docs/execution-grounded-gates.md
+        text: "稳定键"
+    - content-contains:
+        file: docs/main-agent-lessons.json
+        text: "L-2026-0919-078"
+  lastVerified: 2026-09-19
+  status: approved
+  version: 1
