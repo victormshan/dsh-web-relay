@@ -467,7 +467,7 @@
     - file-exists: docs/execution-grounded-gates.md
     - content-contains:
         file: docs/execution-grounded-gates.md
-        text: "四层审计"
+        text: "分层审计"
     - content-contains:
         file: docs/main-agent-lessons.json
         text: "L-2026-0919-075"

@@ -99,7 +99,7 @@
 
 | 验收字段「从未被真实使用者触碰」 | `acceptanceScript` 在 schema/CLI/单测里齐全，但真实任务 0 使用者 → 首次真用即把值当 shell 命令执行（`/bin/sh: x.mjs: not found`），合格产物被判 failed | 新字段上线前必须有**至少一次真实使用者**跑通；探针必须落在双方共享命名空间 `<仓库>/probes/`，且**禁止硬编码单平台路径**（lesson 074/083） |
 | 定时任务弹 cmd 窗口 | 计划任务直接跑 `.cmd` → 每次触发弹一个空窗口（输出已重定向，故窗口是空的） | 经 `_hidden-run-*.vbs` 启动（样式 0 + 等待 + **退出码透传**）；为「不弹窗」丢掉退出码 = 隐藏失败（lesson 081） |
-| 无人值守下告警无人被叫 | 四层审计连续 9 次 ACTION-NEEDED 只写日志与 Last Result（4 小时无人处理） | 告警必须接到唤醒通路（信号文件 → 插件 boot/心跳 → 唤醒主 agent），同源用稳定键**只叫一次**，销账后复发再叫（lesson 078） |
+| 无人值守下告警无人被叫 | 分层审计连续 9 次 ACTION-NEEDED 只写日志与 Last Result（4 小时无人处理） | 告警必须接到唤醒通路（信号文件 → 插件 boot/心跳 → 唤醒主 agent），同源用稳定键**只叫一次**，销账后复发再叫（lesson 078） |
 ## 7. 配套
 
 - 协议全文（外部 AI 侧）：`lib/index.js` 顶部 `WEB_RELAY_PROTOCOL` / `WEB_RELAY_EXTERNAL_AI_SKILL`。
