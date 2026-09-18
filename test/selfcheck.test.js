@@ -3,8 +3,11 @@
 // 运行：node --test test/selfcheck.test.js
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { readFileSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
+import { createHash } from 'node:crypto'
+import path from 'node:path'
+import os from 'node:os'
 import {
   computeDrift,
   checkRouteContract,
@@ -17,6 +20,7 @@ import {
   SELFCHECK_REQUIRED_HEALTH_FIELDS,
 } from '../lib/selfcheck.mjs'
 import { extractRoutes } from '../scripts/sync-engine-docs.mjs'
+import { computeLoadedLibHash, LOADED_LIB_HASH, LOADED_LIB_DIR } from '../lib/index.js'
 
 /** 构造一对内存 fake（source/runtime 两端），files: { source: {rel: content}, runtime: {rel: content} }，
  *  dirs: { rel: [childRelPaths...] }（模拟目录展开——source/runtime 共用同一份目录结构声明，
@@ -365,4 +369,88 @@ test('源码契约: collectHeavyHealth 读取 ccChainStats 时 fail-open（异�
     'collectHeavyHealth 未调用 summarizeChainTasks——应复用 A4a 的聚合函数，不得另立分类'
   )
   assert.match(body, /return\s*\{[^}]*ccChainStats[^}]*\}/, 'collectHeavyHealth 的返回体未包含 ccChainStats')
+})
+
+// ---- ccfeat-20260917-loadedhash: 已加载代码指纹（宿主到底加载了哪份代码，精确可证）----
+// 背景：插件在仓库开发，但运行时加载 profile 安装目录下的副本；只复制文件不重启宿主，
+// 运行时仍是旧代码，且 package.json version 不随每次改动变化。故新增 loadedLibHash：
+// 对已加载模块目录（lib/）下全部 .js/.mjs 文件计算一次内容指纹，暴露到 /health-check，
+// 外部验收器用同一算法独立重算比对——算法必须逐字一致，任何偏差都会导致无法比对。
+
+test('computeLoadedLibHash: 对真实 lib 目录计算结果为 16 位十六进制字符串，且同一目录稳定复现', () => {
+  assert.match(LOADED_LIB_HASH, /^[0-9a-f]{16}$/, 'LOADED_LIB_HASH 不是 16 位十六进制字符串')
+  const again = computeLoadedLibHash(LOADED_LIB_DIR)
+  assert.equal(again, LOADED_LIB_HASH, '同一目录两次计算结果必须一致（稳定复现），且与模块初始化时缓存的值相同')
+  assert.match(again, /^[0-9a-f]{16}$/)
+})
+
+test('computeLoadedLibHash: 算法必须按规格实现（临时夹具目录手工按规格算出期望值再比对）', () => {
+  // 规格：① 取目录下所有 .js/.mjs 文件；② 按 basename 升序排序；③ 每个文件拼一行
+  // basename + "\n" + sha256_hex(文件字节内容) + "\n"；④ 顺序连接为 payload；
+  // ⑤ loadedLibHash = sha256_hex(payload) 的前 16 个十六进制字符。
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'loadedhash-fixture-'))
+  try {
+    // 刻意用非字母序的文件名，验证实现确实按 basename 升序排序而非目录读取顺序或声明顺序。
+    writeFileSync(path.join(dir, 'zeta.js'), 'console.log("z")\n', 'utf8')
+    writeFileSync(path.join(dir, 'alpha.mjs'), 'export const a = 1\n', 'utf8')
+    // 非 .js/.mjs 文件必须被排除在指纹计算之外。
+    writeFileSync(path.join(dir, 'notes.txt'), '不应参与指纹计算', 'utf8')
+
+    const sortedNames = ['alpha.mjs', 'zeta.js'] // 手工按 basename 升序排列（规格 ②）
+    let expectedPayload = ''
+    for (const name of sortedNames) {
+      const bytes = readFileSync(path.join(dir, name))
+      expectedPayload += `${name}\n${createHash('sha256').update(bytes).digest('hex')}\n`
+    }
+    const expected = createHash('sha256').update(expectedPayload, 'utf8').digest('hex').slice(0, 16)
+
+    const actual = computeLoadedLibHash(dir)
+    assert.equal(actual, expected, '实现产出的指纹与按规格手工计算的期望值不一致')
+    assert.match(actual, /^[0-9a-f]{16}$/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('契约清单: SELFCHECK_REQUIRED_HEALTH_FIELDS 包含 loadedLibHash（随既有重启自检自动校验）', () => {
+  assert.ok(
+    SELFCHECK_REQUIRED_HEALTH_FIELDS.includes('loadedLibHash'),
+    'SELFCHECK_REQUIRED_HEALTH_FIELDS 未包含 loadedLibHash——新字段不会被重启自检自动校验，装一半不会被抓出'
+  )
+})
+
+test('端到端契约: 真实 lib/index.js 的 healthCheckHandler 切片必须暴露 loadedLibHash 与 loadedFrom（而非只在模块顶层算了没接线）', () => {
+  const indexPath = fileURLToPath(new URL('../lib/index.js', import.meta.url))
+  const src = readFileSync(indexPath, 'utf8')
+  const sliced = sliceHandlerSource(src)
+  assert.ok(sliced.length > 500, `health handler 切片过短（${sliced.length} 字符）`)
+  assert.match(sliced, /loadedLibHash:\s*LOADED_LIB_HASH/, 'healthCheckHandler 响应体未见 "loadedLibHash: LOADED_LIB_HASH" 赋值')
+  assert.match(sliced, /loadedFrom:\s*LOADED_LIB_DIR/, 'healthCheckHandler 响应体未见 "loadedFrom: LOADED_LIB_DIR" 赋值')
+
+  const contract = checkRouteContract({
+    registeredRoutes: extractRoutes(src),
+    requiredRoutes: SELFCHECK_REQUIRED_ROUTES,
+    handlerSource: sliced,
+    requiredHealthFields: SELFCHECK_REQUIRED_HEALTH_FIELDS,
+  })
+  assert.equal(contract.ok, true, `真实源码契约检查未通过：${JSON.stringify(contract.failed)}`)
+})
+
+test('源码契约: watchdog 探针超时注释已改正为 4000ms 并注明权威来源 bin/watchdog.mjs（不得再写过时的 2000ms）', () => {
+  const indexPath = fileURLToPath(new URL('../lib/index.js', import.meta.url))
+  const src = readFileSync(indexPath, 'utf8')
+  const anchor = src.indexOf('稳定耗时 ~1520ms')
+  assert.ok(anchor !== -1, '未找到探针超时注释所在锚点，注释可能被移除或改写')
+  const window = src.slice(anchor, anchor + 400)
+  assert.match(window, /探针超时\s*4000ms/, '探针超时注释未写成 4000ms')
+  assert.match(window, /bin\/watchdog\.mjs/, '探针超时注释未注明权威来源 bin/watchdog.mjs')
+  assert.ok(!/探针超时\s*2000ms/.test(window), '探针超时注释仍残留过时的 2000ms')
+
+  const watchdogPath = fileURLToPath(new URL('../bin/watchdog.mjs', import.meta.url))
+  const watchdogSrc = readFileSync(watchdogPath, 'utf8')
+  assert.match(
+    watchdogSrc,
+    /timeoutMs:\s*num\(process\.env\.DSH_WEB_TIMEOUT_MS,\s*4000\)/,
+    'bin/watchdog.mjs 的 timeoutMs 默认值权威来源已变化——注释与实现需同步核对'
+  )
 })
