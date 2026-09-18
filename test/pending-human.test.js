@@ -2,7 +2,7 @@
 // 运行：node --test test/pending-human.test.js
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { parsePendingHuman, decidePendingHuman, pendingHandoffText } from '../lib/pending-human.mjs'
+import { parsePendingHuman, decidePendingHuman, pendingHandoffText, resolveWakeSessionId } from '../lib/pending-human.mjs'
 
 const goodEntry = { id: 'chain-abc|too-many-attempts', chainId: 'chain-abc', reason: 'too-many-attempts', taskId: 'ccfix-1', detail: '连续 3 次失败', acknowledgedAt: null }
 
@@ -107,4 +107,40 @@ test('pendingHandoffText：字段缺失时仍返回非空文本（占位说明�
     const txt = pendingHandoffText(null)
     assert.ok(txt.length > 0)
   })
+})
+
+// ---------- resolveWakeSessionId（2026-09-18：唤醒目标解析回退——这台机器的宿主启动器
+// 没有注入 DSH_SESSION_ID，没有回退「判定成立」就永远等于「仅记录，不唤醒」）----------
+
+test('resolveWakeSessionId：env 有值 → 用 env，source=env', () => {
+  const r = resolveWakeSessionId({ env: 'sess-env', recentExprSessionId: 'sess-recent' })
+  assert.equal(r.sessionId, 'sess-env')
+  assert.equal(r.source, 'env')
+})
+
+test('resolveWakeSessionId：env 空、recentExprSessionId 有值 → 回退到 recent，source=recent-expr（关键缺口）', () => {
+  const r = resolveWakeSessionId({ env: null, recentExprSessionId: 'sess-recent' })
+  assert.equal(r.sessionId, 'sess-recent')
+  assert.equal(r.source, 'recent-expr')
+})
+
+test('resolveWakeSessionId：两者都空 → sessionId=null，source=none（不凭空造目标）', () => {
+  const r = resolveWakeSessionId({ env: null, recentExprSessionId: null })
+  assert.equal(r.sessionId, null)
+  assert.equal(r.source, 'none')
+})
+
+test('resolveWakeSessionId：source 取值仅限 env/recent-expr/none 三者之一，且不抛异常', () => {
+  assert.doesNotThrow(() => {
+    assert.equal(resolveWakeSessionId({ env: 'x', recentExprSessionId: null }).source, 'env')
+    assert.equal(resolveWakeSessionId({ env: '', recentExprSessionId: 'y' }).source, 'recent-expr')
+    assert.equal(resolveWakeSessionId({}).source, 'none')
+    assert.equal(resolveWakeSessionId().source, 'none')
+  })
+})
+
+test('resolveWakeSessionId：有值时绝不返回 null（env 与 recent 都非空时优先 env，不丢弃已有目标）', () => {
+  const r = resolveWakeSessionId({ env: 'sess-env', recentExprSessionId: 'sess-recent' })
+  assert.notEqual(r.sessionId, null)
+  assert.equal(r.sessionId, 'sess-env')
 })
