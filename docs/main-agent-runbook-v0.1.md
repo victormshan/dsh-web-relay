@@ -132,3 +132,11 @@
 ### 8.4 计划任务入口纪律
 定时入口一律经隐藏启动器（`D:\cc-tasks\_hidden-run-*.vbs`）：窗口样式 0（隐藏）+ 等待完成 + **WScript.Quit 透传退出码**。
 不得为了「不弹窗」而丢掉退出码——Last Result 是无人值守下唯一的失败可见性出口（门禁 `verify-run-audit-cmd.mjs` 会拦）。
+
+### 8.5 重启前必须「打欠条」：核对清单要落盘成对象
+**重启/中断会清空进程内一切**：内存待办、会话里的「我打算…」、以及未落盘的意图。因此要重启时**先登记、后重启**：
+- 用 `restart-with-checklist.mjs` 登记 `post-restart-verify#gN` 清单信号（写进 `D:\cc-tasks\chain-needs-human.json` 同源状态），**再**执行 `request-restart`；
+- 插件启动扫描读到未结信号 → 自动注入主 agent 会话 → 核对 → `acknowledgeHumanSignal(note)` **销账**；
+- 判据是**盘上有没有这个对象**（不是「我说过没有」）。同一 `stableKey` 只唤醒一次，销账后源再失败才重新唤醒；源自愈则自动销账。
+- 反例（2026-09-19，代价 4 小时空转）：宿主重启前只有「重启后要核对」这句意图，重启后什么都没发生——恢复扫描只续跑**忙碌中的计划步骤**，
+  而"核对"既不是 busy step 也没落盘；同型缺陷还有 v14 两次 arm 覆盖指针导致链条从未派发。详见 `docs/main-agent-lessons.json` L-088。
