@@ -25,6 +25,9 @@ import {
   classifyCcFailure,
   shouldSkipForKnownQuotaExhaustion,
 } from '../lib/cc-channel.js';
+import { shortcutCapMs } from '../lib/quota-parser.mjs';
+import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 /**
  * 创建一个内存 fake fsImpl，仅用于测试，绝不触碰真实磁盘。
@@ -730,6 +733,80 @@ test('shouldSkipForKnownQuotaExhaustion：resetsAt 已过 / 状态缺失 / 非�
   assert.equal(shouldSkipForKnownQuotaExhaustion({ quotaState: null, now }), false);
   assert.equal(shouldSkipForKnownQuotaExhaustion({ quotaState: { kind: 'code-failed', resetsAt: new Date(now + 60000).toISOString() }, now }), false);
   assert.equal(shouldSkipForKnownQuotaExhaustion({ quotaState: { kind: 'quota-exhausted', resetsAt: 'not-a-date' }, now }), false);
+});
+
+// --- shouldSkipForKnownQuotaExhaustion：cap（复用唯一模块 quota-parser.mjs 的 shortcutCapMs）---
+// 背景：主 agent 侧只在「剩余等待 ≤ shortcutCapMs(kind)」内才短路（weekly 24h / 其余 6h），
+// 这是对 resetsAt 被误解析/状态文件陈旧的保护；本文件此前没有这层 cap，一个错误时间戳
+// 能让插件静默停摆整个窗口。以下用例锁定 cap 行为，且不得在本文件另写 6h/24h 常量。
+
+test('shouldSkipForKnownQuotaExhaustion：cap 内（session 档，剩余 1h ≤ 6h）→ true', () => {
+  const now = 1_000_000_000;
+  const skip = shouldSkipForKnownQuotaExhaustion({
+    quotaState: { kind: 'quota-exhausted', resetsAt: new Date(now + 3_600_000).toISOString(), quotaKind: 'session' },
+    now,
+  });
+  assert.equal(skip, true);
+});
+
+test('shouldSkipForKnownQuotaExhaustion：超 cap（session 档，剩余 20h > 6h）→ false（fail-open，照常派发）', () => {
+  const now = 1_000_000_000;
+  const skip = shouldSkipForKnownQuotaExhaustion({
+    quotaState: { kind: 'quota-exhausted', resetsAt: new Date(now + 20 * 3_600_000).toISOString(), quotaKind: 'session' },
+    now,
+  });
+  assert.equal(skip, false);
+});
+
+test('shouldSkipForKnownQuotaExhaustion：weekly 与 session 差异真实生效（同一 resetsAt，剩余 20h）', () => {
+  const now = 1_000_000_000;
+  const resetsAt = new Date(now + 20 * 3_600_000).toISOString();
+  // 剩余 20h：超过 session 的 6h cap（不跳过），但落在 weekly 的 24h cap 内（跳过）。
+  assert.equal(shouldSkipForKnownQuotaExhaustion({ quotaState: { kind: 'quota-exhausted', resetsAt, quotaKind: 'session' }, now }), false);
+  assert.equal(shouldSkipForKnownQuotaExhaustion({ quotaState: { kind: 'quota-exhausted', resetsAt, quotaKind: 'weekly' }, now }), true);
+});
+
+test('shouldSkipForKnownQuotaExhaustion：超 cap（weekly 档，剩余 30h > 24h）→ false', () => {
+  const now = 1_000_000_000;
+  const skip = shouldSkipForKnownQuotaExhaustion({
+    quotaState: { kind: 'quota-exhausted', resetsAt: new Date(now + 30 * 3_600_000).toISOString(), quotaKind: 'weekly' },
+    now,
+  });
+  assert.equal(skip, false);
+});
+
+test('shouldSkipForKnownQuotaExhaustion：quotaKind 缺失（旧状态文件）→ 按 session 处理（6h 上限，保守），不抛错', () => {
+  const now = 1_000_000_000;
+  // 剩余 1h：在 session 的 6h cap 内 → true
+  assert.equal(
+    shouldSkipForKnownQuotaExhaustion({ quotaState: { kind: 'quota-exhausted', resetsAt: new Date(now + 3_600_000).toISOString() }, now }),
+    true
+  );
+  // 剩余 20h：超出 session 的 6h cap → false（旧字段缺失不得被当成 weekly 的 24h 宽松处理）
+  assert.equal(
+    shouldSkipForKnownQuotaExhaustion({ quotaState: { kind: 'quota-exhausted', resetsAt: new Date(now + 20 * 3_600_000).toISOString() }, now }),
+    false
+  );
+});
+
+test('shouldSkipForKnownQuotaExhaustion：cap 边界与来源——等于 shortcutCapMs(kind) 时仍跳过，超出 1ms 时不跳过', () => {
+  const now = 1_000_000_000;
+  const capMs = shortcutCapMs('session');
+  assert.equal(
+    shouldSkipForKnownQuotaExhaustion({ quotaState: { kind: 'quota-exhausted', resetsAt: new Date(now + capMs).toISOString(), quotaKind: 'session' }, now }),
+    true
+  );
+  assert.equal(
+    shouldSkipForKnownQuotaExhaustion({ quotaState: { kind: 'quota-exhausted', resetsAt: new Date(now + capMs + 1).toISOString(), quotaKind: 'session' }, now }),
+    false
+  );
+});
+
+test('lib/index.js 持久化配额状态时写入 quotaKind（消费唯一模块 quotaKindOf，供 cap 按种类取）', () => {
+  const indexPath = fileURLToPath(new URL('../lib/index.js', import.meta.url));
+  const src = fs.readFileSync(indexPath, 'utf8');
+  assert.ok(/import\s*\{\s*quotaKindOf\s*\}\s*from\s*'\.\/quota-parser\.mjs'/.test(src), 'index.js 必须从唯一模块 import quotaKindOf');
+  assert.ok(/quotaKind:\s*quotaKindOf\(/.test(src), 'writeCcQuotaState 调用必须带 quotaKind: quotaKindOf(...)');
 });
 
 // --- nodeFsImpl 存在性检查（不实际调用真实 IO） ---
