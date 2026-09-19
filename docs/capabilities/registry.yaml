@@ -117,7 +117,10 @@
 #   ② 其回退读 DSH_RELAY_REPO_PATH，而宿主启动器设的是 DSH_RELAY_REPO（名字不一致）→ 回退永不生效；
 #   ⇒ shouldUseShadow 对每个 high 步骤都返回 degraded（计划里 9 处 "非 git 工作区：L2 降级"），
 #     L2 worktree 隔离 / 原子合并 / 定时 GC 均未运行，而该降级只写 step note、无升级路径。
-#   已修：启动器补 DSH_RELAY_REPO_PATH（2026-09-19）；可用性由 D:\dsh relay test\verify-shadow-availability.mjs
+#   修复进展：① 启动器已补 DSH_RELAY_REPO_PATH，但**实测重启宿主后仍不生效** —— request-restart 重启的是宿主，
+#   而宿主由常驻 watchdog 拉起，watchdog 继承的是它自己启动时的环境（实测 watchdog 起于 9/15，早于改动）；
+#   ② 因此真修法是让插件用 lib/ 上溯自行解析仓库根（v14：ccfix-20260919-shadowrepo），env 降级为可选加速项。
+#   可用性由 D:\dsh relay test\verify-shadow-availability.mjs
 #   机验（静态=启动器配置；运行=当前 boot 日志须出现「定时 Shadow GC 已启用」；并扫描修复点之后的新降级记录）。
 #   定位澄清：**串行链条派发与串行无人值守不需要影子沙盒**（cc 直接写真实工作树，且整套验证器以
 #   "唯一权威工作树"为前提）；它的价值场景是**多版本/多方案并行试错**（auto-iteration 的 N 版本循环）。
