@@ -4,10 +4,14 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { checkL1Gate, resolveRepoPath, shouldUseShadow, runShadowGC, executeRollbackBaseline, runL2ShadowGate, getGitHead, gcScheduleMs } from '../lib/shadow-gate.js'
+import { fileURLToPath } from 'node:url'
+import { checkL1Gate, resolveRepoPath, shouldUseShadow, runShadowGC, executeRollbackBaseline, runL2ShadowGate, getGitHead, gcScheduleMs, shadowRepoCandidates, resolveShadowRepo } from '../lib/shadow-gate.js'
 
 const REPO = 'D:/DSH'
 const NON_REPO = 'D:/dsh relay test'
+// v3.9 Step1 用例用：本仓库真实根（不依赖硬编码 Windows 路径，WSL/Windows 两侧都能算出）。
+const LIB_DIR = path.dirname(fileURLToPath(new URL('../lib/shadow-gate.js', import.meta.url)))
+const REAL_REPO_ROOT = resolveRepoPath(LIB_DIR)
 
 test('TC-Green: repoPath 识别 + L1 语法预检通过（合法文件）', () => {
   assert.equal(resolveRepoPath(REPO), 'D:/DSH')
@@ -106,8 +110,46 @@ test('source 标记：GC 定时化挂载（lib/index.js 定时器 + shadow-gate 
   const sg = fs.readFileSync(new URL('../lib/shadow-gate.js', import.meta.url), 'utf8')
   assert.ok(src.includes('scheduledGcTimer'))
   assert.ok(src.includes('DSH_RELAY_GC_MS'))
-  assert.ok(src.includes('DSH_RELAY_REPO_PATH'))
   assert.ok(src.includes('定时 Shadow GC 已启用'))
   assert.ok(sg.includes('gcScheduleMs'))
   assert.ok(sg.includes('v3.8 Step2'))
+})
+
+// ---- v3.9 Step1：repoPath 自持回退（lib/ 上溯），不再依赖 DSH_RELAY_REPO_PATH ----
+test('shadowRepoCandidates：候选顺序固定为 base → payload.repoPath → env.DSH_RELAY_REPO_PATH → env.DSH_RELAY_REPO → moduleDir', () => {
+  const cands = shadowRepoCandidates({
+    base: NON_REPO,
+    payload: { repoPath: '/p' },
+    env: { DSH_RELAY_REPO_PATH: '/e1', DSH_RELAY_REPO: '/e2' },
+    moduleDir: '/m'
+  })
+  assert.deepEqual(cands, [NON_REPO, '/p', '/e1', '/e2', '/m'])
+})
+
+test('resolveShadowRepo：候选优先级——payload.repoPath 优先于 env（两者都可用时取 payload）', () => {
+  const got = resolveShadowRepo({ base: NON_REPO, payload: { repoPath: REAL_REPO_ROOT }, env: { DSH_RELAY_REPO_PATH: '/__nowhere_env1__', DSH_RELAY_REPO: '/__nowhere_env2__' } })
+  assert.equal(got, REAL_REPO_ROOT)
+})
+
+test('resolveShadowRepo：候选优先级——env.DSH_RELAY_REPO_PATH 优先于 env.DSH_RELAY_REPO（payload 缺省时）', () => {
+  const got = resolveShadowRepo({ base: NON_REPO, payload: {}, env: { DSH_RELAY_REPO_PATH: REAL_REPO_ROOT, DSH_RELAY_REPO: '/__nowhere_env2__' } })
+  assert.equal(got, REAL_REPO_ROOT)
+})
+
+test('resolveShadowRepo：**无 env** + base 非 git 工作区，仍能靠 moduleDir（lib/ 上溯）解析出仓库根', () => {
+  const got = resolveShadowRepo({ base: NON_REPO, payload: {}, env: {} })
+  assert.equal(got, REAL_REPO_ROOT)
+  assert.ok(typeof got === 'string' && got.length > 0)
+})
+
+test('resolveShadowRepo：全部来源不可用 → null（不得凭空构造路径）', () => {
+  const nowhere = process.platform === 'win32' ? 'D:\\__nowhere__' : '/__nowhere__'
+  const got = resolveShadowRepo({ base: nowhere, payload: {}, env: {}, moduleDir: nowhere })
+  assert.equal(got, null)
+})
+
+test('定时 GC 门槛：resolveShadowRepo 在无 env（启动期调用形状 base=null,payload={}）时也应解析出仓库根 → gcRepo 真值，定时器应启用', () => {
+  const gcRepo = resolveShadowRepo({ base: null, payload: {}, env: {} })
+  assert.equal(gcRepo, REAL_REPO_ROOT)
+  assert.ok(Boolean(gcRepo)) // 与 lib/index.js 的 `gcMs > 0 && gcRepo` 门槛条件一致——无 env 也应为真
 })
