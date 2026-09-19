@@ -12,6 +12,8 @@ import {
   isQuotaFailureText,
   classifyQuotaProbe,
   shortcutCapMs,
+  quotaKindOf,
+  classifyQuotaProbeDetail,
 } from '../lib/quota-parser.mjs';
 
 const REAL_WEEKLY = "You've hit your weekly limit · resets 2am (Asia/Shanghai)";
@@ -93,4 +95,55 @@ test('shortcutCapMs：weekly → 24 小时；其余（session/rate/usage/未知�
   assert.equal(shortcutCapMs('rate'), 6 * 60 * 60 * 1000);
   assert.equal(shortcutCapMs('unknown-kind'), 6 * 60 * 60 * 1000);
   assert.equal(shortcutCapMs(undefined), 6 * 60 * 60 * 1000);
+});
+
+// --- quotaKindOf ---
+
+test('quotaKindOf：含 weekly → weekly（本机真实文案）', () => {
+  assert.equal(quotaKindOf(REAL_WEEKLY), 'weekly');
+});
+
+test('quotaKindOf：含 rate → rate', () => {
+  assert.equal(quotaKindOf('429 rate limit hit, please retry later'), 'rate');
+});
+
+test('quotaKindOf：含 usage → usage', () => {
+  assert.equal(quotaKindOf('Claude AI usage limit reached'), 'usage');
+});
+
+test('quotaKindOf：其余限额措辞（不含 weekly/rate/usage）→ session', () => {
+  assert.equal(quotaKindOf("You've hit your session limit · resets 7am (Asia/Shanghai)"), 'session');
+  assert.equal(quotaKindOf('API error: quota exceeded'), 'session');
+});
+
+test('quotaKindOf：完全不含限额措辞 → unknown（不得默认成 session，谎报种类）', () => {
+  assert.equal(quotaKindOf('Error: cannot find module "./missing.js"'), 'unknown');
+  assert.equal(quotaKindOf('all tests passed'), 'unknown');
+  assert.equal(quotaKindOf(''), 'unknown');
+  assert.equal(quotaKindOf(undefined), 'unknown');
+});
+
+test('quotaKindOf：优先级 weekly > rate > usage > session', () => {
+  assert.equal(quotaKindOf('weekly rate usage session limit all at once'), 'weekly');
+  assert.equal(quotaKindOf('rate usage session limit'), 'rate');
+  assert.equal(quotaKindOf('usage session limit'), 'usage');
+});
+
+// --- classifyQuotaProbeDetail ---
+
+test('classifyQuotaProbeDetail：限额文案 → available=false，kind=weekly，resetsAt 可解析', () => {
+  const now = Date.parse('2026-09-19T10:00:00Z');
+  const detail = classifyQuotaProbeDetail(REAL_WEEKLY);
+  assert.equal(detail.available, false);
+  assert.equal(detail.kind, 'weekly');
+  assert.equal(typeof detail.resetsAt, 'string');
+  assert.equal(detail.resetsAt, parseResetsAt(REAL_WEEKLY));
+  assert.ok(Date.parse(detail.resetsAt) > now);
+});
+
+test('classifyQuotaProbeDetail：探针输出 OK → available=true（kind 允许 unknown，resetsAt 为 null）', () => {
+  const detail = classifyQuotaProbeDetail('OK');
+  assert.equal(detail.available, true);
+  assert.equal(detail.kind, 'unknown');
+  assert.equal(detail.resetsAt, null);
 });
