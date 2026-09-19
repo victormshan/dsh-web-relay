@@ -690,6 +690,28 @@ test('classifyCcFailure（反向回归）：无 errorCode 但 status=failed → 
   assert.equal(r.errorCode, null);
 });
 
+// ccfix-20260919-quotaclass: 配额判断收敛到唯一模块 lib/quota-parser.mjs 后的回归——
+// classifyCcFailure 对 weekly/session/quota/普通失败四类文本的判定必须保持不变（weekly 是
+// 本机真实文案，此前四处实现里的 cc-channel.js 版本漏判 weekly，只认 session/rate/quota）。
+test('classifyCcFailure（唯一模块收敛后）：weekly/session/quota/普通失败四类判定均正确', () => {
+  const now = Date.UTC(2026, 8, 19, 10, 0, 0);
+  const mk = (log) => classifyCcFailure({ result: { status: 'failed', exit: 1, errorCode: null }, claudeLogText: log, now });
+
+  const weekly = mk("You've hit your weekly limit · resets 2am (Asia/Shanghai)");
+  assert.equal(weekly.kind, 'quota-exhausted');
+  assert.ok(typeof weekly.resetsAt === 'string' && Date.parse(weekly.resetsAt) > now);
+
+  const session = mk("You've hit your session limit · resets 7am (Asia/Shanghai)");
+  assert.equal(session.kind, 'quota-exhausted');
+
+  const quota = mk('API error: quota exceeded');
+  assert.equal(quota.kind, 'quota-exhausted');
+
+  const plain = mk('Error: cannot find module "./missing.js"');
+  assert.notEqual(plain.kind, 'quota-exhausted');
+  assert.equal(plain.kind, 'code-failed');
+});
+
 test('shouldSkipForKnownQuotaExhaustion：已知配额耗尽且 now < resetsAt → true（应跳过派发）', () => {
   const now = 1_000_000_000;
   const skip = shouldSkipForKnownQuotaExhaustion({

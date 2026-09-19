@@ -133,6 +133,19 @@ test('classifyCcFailure: cc-quota-exhausted 归类（claude.log 关键词兜底�
   assert.equal(r3.category, 'cc-quota-exhausted');
 });
 
+// ccfix-20260919-quotaclass: 本机真实限额文案是 weekly limit，此前 FAILURE_RULES 的
+// cc-quota-exhausted 规则只认 session/rate/quota，漏判导致 byFailure 把配额耗尽记成
+// unknown（报告引用的就是它）。规则改为由唯一模块 lib/quota-parser.mjs 的 LIMIT_WORDING
+// 组合而成后须覆盖 weekly / usage limit / hit your ... limit，不得回归。
+test('classifyCcFailure: cc-quota-exhausted 归类（本机真实 weekly 文案 + usage limit / hit your ... limit，不回归）', () => {
+  const r1 = classifyCcFailure("You've hit your weekly limit · resets 2am (Asia/Shanghai)");
+  const r2 = classifyCcFailure('Claude AI usage limit reached');
+  const r3 = classifyCcFailure("You've hit your daily limit, try again later");
+  assert.equal(r1.category, 'cc-quota-exhausted');
+  assert.equal(r2.category, 'cc-quota-exhausted');
+  assert.equal(r3.category, 'cc-quota-exhausted');
+});
+
 test('classifyCcFailure: cc-permission-denied 归类（字面量 reason 与关键词兜底），不被 unknown 吞并', () => {
   const r1 = classifyCcFailure('cc-permission-denied');
   const r2 = classifyCcFailure("Claude requested permissions to write to foo.txt, but you haven't granted it yet");
@@ -476,6 +489,26 @@ test('summarizeChainTasks: cc-quota-exhausted 归桶（与审核通道 classifyC
     { now: NOW },
   );
   assert.equal(s.byFailure['cc-quota-exhausted'], 1);
+});
+
+// ccfix-20260919-quotaclass: 端到端用例——本机真实 weekly 文案只落在 reason（errorCode 为空，
+// 对应 runner.sh 未识别出 errorCode 时把原始 claude.log 摘录写进 reason 的真实场景），经由
+// summarizeChainTasks 断言 byFailure 必须出现 cc-quota-exhausted，而不是 unknown（此前的
+// bug：三处判据都只认 session/rate/quota，导致这条真实记录落进 unknown 桶）。
+test('summarizeChainTasks（端到端）: reason 为本机真实 weekly 限额文案 → byFailure.cc-quota-exhausted=1，且不出现 unknown', () => {
+  const s = summarizeChainTasks(
+    [{
+      taskId: 't-weekly',
+      status: 'failed',
+      start: '2026-09-16T10:00:00Z',
+      errorCode: '',
+      reason: "You've hit your weekly limit · resets 2am (Asia/Shanghai)",
+    }],
+    { now: NOW },
+  );
+  assert.equal(s.byFailure['cc-quota-exhausted'], 1);
+  assert.equal(s.byFailure.unknown, undefined);
+  assert.equal(s.failed, 1);
 });
 
 test('summarizeChainTasks: cc-timeout 归桶（与审核通道 classifyCcFailure 同桶名）', () => {
