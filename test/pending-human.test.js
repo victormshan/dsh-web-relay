@@ -144,3 +144,39 @@ test('resolveWakeSessionId：有值时绝不返回 null（env 与 recent 都非�
   assert.notEqual(r.sessionId, null)
   assert.equal(r.sessionId, 'sess-env')
 })
+
+// ---------- ccfeat-20260920-waketarget：新增「最近活跃会话」档 ----------
+// 事故背景：用户刷新后 GUI 换了新会话，而 expr 仍绑刷新前那个 → 旧逻辑把唤醒投给旧会话 → 两个"我"
+// 并发写同一工作区（旧会话还用内联 PowerShell 正则把主槽信号文件写成 []）；见 lib/pending-human.mjs 注释。
+
+test('resolveWakeSessionId：activeSessions 有值时优先于 history expr sessionId（刷新后投给新会话）', () => {
+  const r = resolveWakeSessionId({ activeSessions: [{ id: 'sess-new', mtimeMs: 2000 }, { id: 'sess-old', mtimeMs: 1000 }], recentExprSessionId: 'sess-old' })
+  assert.equal(r.sessionId, 'sess-new')
+  assert.equal(r.source, 'active')
+  // 断言**结构性事实**（note 存在且点名被切换掉的历史会话），不锁具体措辞——
+  // 初版写 assert.match(note, /切换/) 而实现用的是"切到"，属于 L-087 那类"断言编码了偶然措辞"的脆断言。
+  assert.ok(r.note && r.note.includes('sess-old'), `note 应点名被切换掉的历史会话，实得：${r.note}`)
+})
+
+test('resolveWakeSessionId：env 仍最高优先（显式注入不被活跃会话覆盖）', () => {
+  const r = resolveWakeSessionId({ env: 'sess-env', activeSessions: [{ id: 'sess-new', mtimeMs: 9999 }], recentExprSessionId: 'sess-old' })
+  assert.equal(r.sessionId, 'sess-env')
+  assert.equal(r.source, 'env')
+})
+
+test('resolveWakeSessionId：activeSessions 里与历史会话相同 → 不产生"已切换"note（避免噪声）', () => {
+  const r = resolveWakeSessionId({ activeSessions: [{ id: 'sess-same', mtimeMs: 1 }], recentExprSessionId: 'sess-same' })
+  assert.equal(r.source, 'active')
+  assert.equal(r.note, undefined)
+})
+
+test('resolveWakeSessionId：畸形 activeSessions（缺 id / mtime 非数）被忽略并回退到 expr 历史会话', () => {
+  const r = resolveWakeSessionId({ activeSessions: [{ id: '', mtimeMs: 5 }, { id: 'x' }, { mtimeMs: 5 }], recentExprSessionId: 'sess-recent' })
+  assert.equal(r.sessionId, 'sess-recent')
+  assert.equal(r.source, 'recent-expr')
+})
+
+test('resolveWakeSessionId：activeSessions 为空数组等价于未提供（回落旧行为，保持向后兼容）', () => {
+  assert.equal(resolveWakeSessionId({ activeSessions: [], recentExprSessionId: 'y' }).source, 'recent-expr')
+  assert.equal(resolveWakeSessionId({ activeSessions: null, recentExprSessionId: 'y' }).source, 'recent-expr')
+})
