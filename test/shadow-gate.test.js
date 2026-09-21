@@ -8,7 +8,11 @@ import { fileURLToPath } from 'node:url'
 import { checkL1Gate, resolveRepoPath, shouldUseShadow, runShadowGC, executeRollbackBaseline, runL2ShadowGate, getGitHead, gcScheduleMs, shadowRepoCandidates, resolveShadowRepo } from '../lib/shadow-gate.js'
 
 const REPO = 'D:/DSH'
-const NON_REPO = 'D:/dsh relay test'
+// ⚠ 2026-09-21 修正：此处原为硬编码 `'D:/dsh relay test'`，把它当作"非 git 工作区"的夹具 ——
+//   而 2026-09-21 起该工作区**本身成了 git 仓库**（工具链纳入版本控制），于是这些用例全部失败：
+//   断言把"世界的瞬时状态"编码进了测试（L-087/L-090 同型）。实现是对的，夹具错了。
+//   改为**临时目录**：由测试自己创建，保证在任何环境下都不是 git 仓库（父目录 %TEMP% 亦非仓库）。
+const NON_REPO = fs.mkdtempSync(path.join(os.tmpdir(), 'shadow-nonrepo-'))
 // v3.9 Step1 用例用：本仓库真实根（不依赖硬编码 Windows 路径，WSL/Windows 两侧都能算出）。
 const LIB_DIR = path.dirname(fileURLToPath(new URL('../lib/shadow-gate.js', import.meta.url)))
 const REAL_REPO_ROOT = resolveRepoPath(LIB_DIR)
