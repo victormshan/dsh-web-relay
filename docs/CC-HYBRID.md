@@ -358,7 +358,7 @@ curl -X POST http://127.0.0.1:3080/dsh-web-relay/route/decide -H 'content-type: 
 | `DSH_WORKSPACE` | `index.js` |
 
 ### 14.5 版本锚点
-`package.json` 当前 `version` 为 `4.9.7`；`README.md`（版本对照表/更新记录）与 `docs/COMPATIBILITY.md`（兼容矩阵）均已用精确字符串 `4.9.7` 记载，`--check` 对此类零命中。
+`package.json` 当前 `version` 为 `4.10.0`；`README.md`（版本对照表/更新记录）与 `docs/COMPATIBILITY.md`（兼容矩阵）均已用精确字符串 `4.9.7` 记载，`--check` 对此类零命中。
 
 ### 14.6 实现与测试
 - 可注入纯函数：`collectEngineFacts({ readFile, root, libFiles })` / `collectDocFacts({ readFile, root })` / `diffFacts(engine, docs)`，CLI 只做 `fs` IO 与退出码（`scripts/sync-engine-docs.mjs`）。

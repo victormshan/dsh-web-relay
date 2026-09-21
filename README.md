@@ -47,7 +47,7 @@ dsh plugin --profile web add dsh-web-relay
 
 | 本插件版本 | 可用 dsh 版本 | 依赖 |
 |---|---|---|
-| **4.9.7**（新线兼容版） | **0.1.0-rc.7 线** 与 **0.1.5+（新线）** | rc.7：宿主自带 `apiProxy`；新线：需随包 [`shim/dsh-apiproxy-shim`](shim/README.md)。两者均需 `webServer` / `fs` / `sandboxPolicy` / `agentDefaultModel` |
+| **4.10.0**（新线兼容版） | **0.1.0-rc.7 线** 与 **0.1.5+（新线）** | rc.7：宿主自带 `apiProxy`；新线：需随包 [`shim/dsh-apiproxy-shim`](shim/README.md)。两者均需 `webServer` / `fs` / `sandboxPolicy` / `agentDefaultModel` |
 | **4.9.2**（dsh 升级前的最后一版） | **0.1.0-rc.7 线** | 硬依赖 `apiProxy` 服务（rc.7 由 `@deepseek-ai/dsh-host-apiproxy` 提供） |
 
 ⚠ **4.9.2 及更早版本与 0.1.5+（新线）不兼容**：新线已移除 `apiProxy` 服务，`dsh-web-relay` / `dsh-side-window` 会停在 `pending (waiting for service: apiProxy)`，使 `dsh web` 以
