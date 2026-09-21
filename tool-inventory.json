@@ -1,0 +1,393 @@
+{
+  "generatedAt": "2026-09-21T20:26:02.306Z",
+  "how": "由 verify-tool-inventory.mjs --update 从权威引用点穷举生成；勿手改（改引用点后重跑）",
+  "count": 48,
+  "tools": [
+    {
+      "file": "agent-write-lock.mjs",
+      "refs": [
+        "runbook"
+      ],
+      "bytes": 5947
+    },
+    {
+      "file": "arm-chain.mjs",
+      "refs": [
+        "regression",
+        "verify-gates:GATES"
+      ],
+      "bytes": 12373
+    },
+    {
+      "file": "audit-all.mjs",
+      "refs": [
+        "regression",
+        "verify-gates:GATES"
+      ],
+      "bytes": 18669
+    },
+    {
+      "file": "cc-chain.mjs",
+      "refs": [
+        "regression",
+        "verify-gates:GATES"
+      ],
+      "bytes": 42055
+    },
+    {
+      "file": "cc-doctor.mjs",
+      "refs": [
+        "regression"
+      ],
+      "bytes": 10784
+    },
+    {
+      "file": "cc-specs/genexp2-s01.mjs",
+      "refs": [
+        "verify-gates:GATES"
+      ],
+      "bytes": 3526
+    },
+    {
+      "file": "cc-specs/v1-1.mjs",
+      "refs": [
+        "regression"
+      ],
+      "bytes": 9191
+    },
+    {
+      "file": "chain-human-signal.mjs",
+      "refs": [
+        "runbook"
+      ],
+      "bytes": 13963
+    },
+    {
+      "file": "chain-lock.mjs",
+      "refs": [
+        "audit-all:REQUIRED_LAYERS",
+        "regression",
+        "verify-gates:GATES"
+      ],
+      "bytes": 3139
+    },
+    {
+      "file": "check-spec.mjs",
+      "refs": [
+        "regression",
+        "verify-gates:GATES"
+      ],
+      "bytes": 20545
+    },
+    {
+      "file": "current-link.mjs",
+      "refs": [
+        "regression",
+        "runbook",
+        "verify-gates:GATES"
+      ],
+      "bytes": 6248
+    },
+    {
+      "file": "declare-autoiter.mjs",
+      "refs": [
+        "regression"
+      ],
+      "bytes": 4557
+    },
+    {
+      "file": "deliver-three-copies.mjs",
+      "refs": [
+        "runbook"
+      ],
+      "bytes": 5963
+    },
+    {
+      "file": "optimistic-guard.mjs",
+      "refs": [
+        "regression",
+        "runbook",
+        "verify-gates:GATES"
+      ],
+      "bytes": 10884
+    },
+    {
+      "file": "precheck-audit-signal.mjs",
+      "refs": [
+        "regression",
+        "verify-gates:GATES"
+      ],
+      "bytes": 7467
+    },
+    {
+      "file": "precheck-probes-portable.mjs",
+      "refs": [
+        "regression",
+        "verify-gates:GATES"
+      ],
+      "bytes": 5189
+    },
+    {
+      "file": "probes/accept-smoke.mjs",
+      "refs": [
+        "regression",
+        "verify-gates:GATES"
+      ],
+      "bytes": 2451
+    },
+    {
+      "file": "probes/quota-skip-policy-accept.mjs",
+      "refs": [
+        "regression",
+        "verify-gates:GATES"
+      ],
+      "bytes": 5492
+    },
+    {
+      "file": "probes/selftest-probes.mjs",
+      "refs": [
+        "regression",
+        "verify-gates:GATES"
+      ],
+      "bytes": 3722
+    },
+    {
+      "file": "protocol-close-step.mjs",
+      "refs": [
+        "regression"
+      ],
+      "bytes": 14891
+    },
+    {
+      "file": "regression-post-restart.mjs",
+      "refs": [
+        "verify-gates:GATES"
+      ],
+      "bytes": 20419
+    },
+    {
+      "file": "restart-with-checklist.mjs",
+      "refs": [
+        "runbook"
+      ],
+      "bytes": 6163
+    },
+    {
+      "file": "scan-spec-templates.mjs",
+      "refs": [
+        "regression"
+      ],
+      "bytes": 2280
+    },
+    {
+      "file": "verify-acceptance-wiring.mjs",
+      "refs": [
+        "regression",
+        "verify-gates:GATES"
+      ],
+      "bytes": 8427
+    },
+    {
+      "file": "verify-autoir-drill.mjs",
+      "refs": [
+        "audit-all:REQUIRED_LAYERS",
+        "regression"
+      ],
+      "bytes": 10309
+    },
+    {
+      "file": "verify-autoir-events.mjs",
+      "refs": [
+        "regression",
+        "runbook",
+        "verify-gates:GATES"
+      ],
+      "bytes": 16919
+    },
+    {
+      "file": "verify-autoir-wiring.mjs",
+      "refs": [
+        "regression",
+        "verify-gates:GATES"
+      ],
+      "bytes": 7242
+    },
+    {
+      "file": "verify-cc-task.mjs",
+      "refs": [
+        "regression",
+        "verify-gates:GATES"
+      ],
+      "bytes": 20189
+    },
+    {
+      "file": "verify-chain-run.mjs",
+      "refs": [
+        "audit-all:REQUIRED_LAYERS",
+        "regression",
+        "verify-gates:GATES"
+      ],
+      "bytes": 12378
+    },
+    {
+      "file": "verify-claims.mjs",
+      "refs": [
+        "audit-all:REQUIRED_LAYERS",
+        "regression",
+        "verify-gates:GATES"
+      ],
+      "bytes": 6374
+    },
+    {
+      "file": "verify-defer-restart-checklist.mjs",
+      "refs": [
+        "runbook"
+      ],
+      "bytes": 2888
+    },
+    {
+      "file": "verify-delivery-live.mjs",
+      "refs": [
+        "audit-all:REQUIRED_LAYERS",
+        "regression",
+        "runbook",
+        "verify-gates:GATES"
+      ],
+      "bytes": 14848
+    },
+    {
+      "file": "verify-gates.mjs",
+      "refs": [
+        "audit-all:REQUIRED_LAYERS",
+        "regression"
+      ],
+      "bytes": 16470
+    },
+    {
+      "file": "verify-guard-wiring.mjs",
+      "refs": [
+        "regression",
+        "runbook",
+        "verify-gates:GATES"
+      ],
+      "bytes": 4404
+    },
+    {
+      "file": "verify-human-signal.mjs",
+      "refs": [
+        "regression",
+        "verify-gates:GATES"
+      ],
+      "bytes": 7744
+    },
+    {
+      "file": "verify-iteration-state.mjs",
+      "refs": [
+        "audit-all:REQUIRED_LAYERS",
+        "regression",
+        "verify-gates:GATES"
+      ],
+      "bytes": 30301
+    },
+    {
+      "file": "verify-postrestart-wake-path.mjs",
+      "refs": [
+        "runbook"
+      ],
+      "bytes": 4990
+    },
+    {
+      "file": "verify-quota-patterns.mjs",
+      "refs": [
+        "regression",
+        "verify-gates:GATES"
+      ],
+      "bytes": 7952
+    },
+    {
+      "file": "verify-quota-single-source.mjs",
+      "refs": [
+        "audit-all:REQUIRED_LAYERS",
+        "regression",
+        "verify-gates:GATES"
+      ],
+      "bytes": 12394
+    },
+    {
+      "file": "verify-run-audit-cmd.mjs",
+      "refs": [
+        "regression",
+        "runbook",
+        "verify-gates:GATES"
+      ],
+      "bytes": 10135
+    },
+    {
+      "file": "verify-run-chain-cmd.mjs",
+      "refs": [
+        "regression",
+        "verify-gates:GATES"
+      ],
+      "bytes": 2071
+    },
+    {
+      "file": "verify-sediment.mjs",
+      "refs": [
+        "audit-all:REQUIRED_LAYERS",
+        "regression",
+        "verify-gates:GATES"
+      ],
+      "bytes": 9087
+    },
+    {
+      "file": "verify-shadow-availability.mjs",
+      "refs": [
+        "regression",
+        "verify-gates:GATES"
+      ],
+      "bytes": 12014
+    },
+    {
+      "file": "verify-signal-write-guard.mjs",
+      "refs": [
+        "regression",
+        "runbook",
+        "verify-gates:GATES"
+      ],
+      "bytes": 7082
+    },
+    {
+      "file": "verify-single-writer.mjs",
+      "refs": [
+        "regression",
+        "verify-gates:GATES"
+      ],
+      "bytes": 6905
+    },
+    {
+      "file": "verify-tool-inventory.mjs",
+      "refs": [
+        "regression",
+        "verify-gates:GATES"
+      ],
+      "bytes": 8095
+    },
+    {
+      "file": "verify-v1-acceptance.mjs",
+      "refs": [
+        "regression"
+      ],
+      "bytes": 6705
+    },
+    {
+      "file": "verify-wake-occurrence.mjs",
+      "refs": [
+        "audit-all:REQUIRED_LAYERS",
+        "regression",
+        "runbook",
+        "verify-gates:GATES"
+      ],
+      "bytes": 29152
+    }
+  ]
+}

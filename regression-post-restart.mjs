@@ -136,6 +136,8 @@ const cases = [
   { name: '乐观检测自检', args: ['optimistic-guard.mjs', '--selftest'], expectExit: 0, mustInclude: ['RESULT: 7/7'] },
   // ㉜ 乐观检测接线：--guard 在落盘前拦截（含"无记录→4"与"已变动→1"两条负控 + 重启顺序断言）
   { name: '乐观检测接线验证', args: ['verify-guard-wiring.mjs'], expectExit: 0, mustInclude: ['RESULT: 7/7'] },
+  // ㉝ 活工具清单：清单 vs 权威引用点穷举（防"新工具加了没登记"）
+  { name: '活工具清单自检', args: ['verify-tool-inventory.mjs', '--selftest'], expectExit: 0, mustInclude: ['RESULT: 5/5'] },
 ];
 
 // 收口器：已 approved → noop（exit 0）；未批准 → 拒绝收口（exit 3）。按真实状态取期望。
