@@ -1,0 +1,58 @@
+# 工作区工具链仓库 —— 只收**工具与规格**，不收状态、日志、一次性物与凭证。
+# 规则：排除式（先 ignore 这些，再 git add -A）。原因与清单见 README-WORKSPACE-TOOLS.md 与 runbook §8.12。
+
+# ── 大体积 / 状态类（非工具）──
+session-main.jsonl
+web-relay/
+.zstd-tool/
+_analysis/
+_archive/
+_fixtures/
+relay-patch/
+stock-system/
+dsh-web-gemini-ext/
+step-value/
+node_modules/
+
+# ── 一次性物（`_` 前缀：脚本 / 转储 / 提交信息 / 夹具）──
+_*
+
+# ── 一次性请求载荷与夹具 JSON（193 个 json 的绝大多数）──
+payload-*.json
+p-*.json
+p-s*.json
+v-*.json
+v-s*.json
+sv-*.json
+d-*.json
+d-s*.json
+f-*.json
+f2-*.json
+f3-*.json
+n-*.json
+n-s*.json
+e-*.json
+e-s*.json
+
+# ── 备份 / 日志 / 瞬时状态 ──
+*.bak
+*.bak-*
+*.log
+.agent-write-lock.json
+*-trace.txt
+dump-*.txt
+main-trace-*.txt
+session-how-to-update-dsh-chat.txt
+*cc-quota-state.json
+
+# ── 凭证类：绝不入库、绝不推远端 ──
+bridge.token
+*.token
+*.key
+*.pem
+*credential*
+*secret*
+.credentials*
+
+# ── 根目录过程稿文档（正式手册在 dsh-web-relay 仓库里；这些是过程稿）──
+*.md

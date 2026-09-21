@@ -1,0 +1,80 @@
+{
+  "note": "实测数字与关键事实的登记表：每条都可**复跑**。用途是防本会话反复出现的一类错误——把过时注释/过时脚本的输出当成事实（实例：cc 报告引用 lib/index.js 注释里的 2000ms，而权威实现是 4000ms；我自己的分析脚本复刻旧逻辑后给出假失败）。",
+  "claims": [
+    {
+      "id": "watchdog-timeout-default",
+      "desc": "watchdog 探针默认超时 = 4000ms（权威实现，而非注释）",
+      "type": "file-regex",
+      "file": "bin/watchdog.mjs",
+      "regex": "timeoutMs:\\s*num\\(process\\.env\\.DSH_WEB_TIMEOUT_MS,\\s*(\\d+)\\)",
+      "expect": "4000"
+    },
+    {
+      "id": "health-cache-ttl-default",
+      "desc": "健康聚合 TTL 默认 = 15000ms",
+      "type": "file-regex",
+      "file": "lib/index.js",
+      "regex": "HEALTH_CACHE_MS = Number\\(process\\.env\\.DSH_RELAY_HEALTH_CACHE_MS\\) \\|\\| (\\d+)",
+      "expect": "15000"
+    },
+    {
+      "id": "selfcheck-contract-has-ccChainStats",
+      "desc": "自检契约必须包含 ccChainStats（A4b 交付的字段，装一半会被自检抓出）",
+      "type": "file-regex",
+      "file": "lib/selfcheck.mjs",
+      "regex": "'ccChainStats'",
+      "expect": null
+    },
+    {
+      "id": "probes-portable-both-platforms",
+      "desc": "三条验收探针在 Windows 与 WSL（生产路径）两侧判定一致且都通过 —— 单侧验证发现不了「生产跑不动」这类问题",
+      "type": "cmd",
+      "script": "precheck-probes-portable.mjs",
+      "args": [],
+      "expectExit": 0,
+      "expectContains": "RESULT: 6/6"
+    },
+    {
+      "id": "hidden-launcher-propagates-exitcode",
+      "desc": "隐藏启动器必须透传退出码：成功夹具→0、失败夹具(exit 7)→7（否则「窗口藏起来了、失败也一起藏起来」）",
+      "type": "cmd",
+      "script": "precheck-hidden-launcher.mjs",
+      "args": [],
+      "expectExit": 0,
+      "expectContains": "RESULT: 3/3"
+    },
+    {
+      "id": "chain-armer-selftest",
+      "desc": "链条装载器校验器自测 7/7（规格门禁 + 负控规则）",
+      "type": "cmd",
+      "script": "arm-chain.mjs",
+      "args": ["--selftest"],
+      "expectExit": 0,
+      "expectContains": "RESULT: 7/7"
+    },
+    {
+      "id": "anchors-selftest",
+      "desc": "锚点自检 25/25（规格门禁的内建自证）",
+      "type": "cmd",
+      "script": "check-spec.mjs",
+      "args": ["--selftest-anchors"],
+      "expectExit": 0,
+      "expectContains": "25/25 通过"
+    },
+    {
+      "id": "no-stale-2000ms-comment",
+      "desc": "lib/index.js 不得再声称「探针超时 2000ms」（实现是 4000ms）——该注释曾误导 cc 得出错误的性能结论",
+      "type": "file-not-regex",
+      "file": "lib/index.js",
+      "regex": "探针超时 2000ms"
+    },
+    {
+      "id": "healthcheck-exposes-loadedLibHash",
+      "desc": "/health-check 暴露已加载 lib 代码指纹与来源目录（⑤b 交付；让「宿主加载了哪份代码」从间接推断变成精确可证）",
+      "type": "file-regex",
+      "file": "lib/index.js",
+      "regex": "loadedLibHash:\\s*LOADED_LIB_HASH",
+      "expect": null
+    }
+  ]
+}

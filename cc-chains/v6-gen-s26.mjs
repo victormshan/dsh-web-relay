@@ -1,0 +1,33 @@
+// v6-gen-s26 链条（由 gen-genexp-specs.mjs 生成）：S 组 26 次独立重复，用于与 D 组分布比较。
+// 每项均为只读 understand 任务（不传 --close-after-accept）；复本 prompt 与 S 组逐字节相同。
+export const chain = {
+  id: 'v6-gen-s26',
+  items: [
+    { label: 'S 复本 r01', spec: 'cc-specs/genexp-s-r01.mjs', taskId: 'ccgen-20260916-prop-s-r01' },
+    { label: 'S 复本 r02', spec: 'cc-specs/genexp-s-r02.mjs', taskId: 'ccgen-20260916-prop-s-r02' },
+    { label: 'S 复本 r03', spec: 'cc-specs/genexp-s-r03.mjs', taskId: 'ccgen-20260916-prop-s-r03' },
+    { label: 'S 复本 r04', spec: 'cc-specs/genexp-s-r04.mjs', taskId: 'ccgen-20260916-prop-s-r04' },
+    { label: 'S 复本 r05', spec: 'cc-specs/genexp-s-r05.mjs', taskId: 'ccgen-20260916-prop-s-r05' },
+    { label: 'S 复本 r06', spec: 'cc-specs/genexp-s-r06.mjs', taskId: 'ccgen-20260916-prop-s-r06' },
+    { label: 'S 复本 r07', spec: 'cc-specs/genexp-s-r07.mjs', taskId: 'ccgen-20260916-prop-s-r07' },
+    { label: 'S 复本 r08', spec: 'cc-specs/genexp-s-r08.mjs', taskId: 'ccgen-20260916-prop-s-r08' },
+    { label: 'S 复本 r09', spec: 'cc-specs/genexp-s-r09.mjs', taskId: 'ccgen-20260916-prop-s-r09' },
+    { label: 'S 复本 r10', spec: 'cc-specs/genexp-s-r10.mjs', taskId: 'ccgen-20260916-prop-s-r10' },
+    { label: 'S 复本 r11', spec: 'cc-specs/genexp-s-r11.mjs', taskId: 'ccgen-20260916-prop-s-r11' },
+    { label: 'S 复本 r12', spec: 'cc-specs/genexp-s-r12.mjs', taskId: 'ccgen-20260916-prop-s-r12' },
+    { label: 'S 复本 r13', spec: 'cc-specs/genexp-s-r13.mjs', taskId: 'ccgen-20260916-prop-s-r13' },
+    { label: 'S 复本 r14', spec: 'cc-specs/genexp-s-r14.mjs', taskId: 'ccgen-20260916-prop-s-r14' },
+    { label: 'S 复本 r15', spec: 'cc-specs/genexp-s-r15.mjs', taskId: 'ccgen-20260916-prop-s-r15' },
+    { label: 'S 复本 r16', spec: 'cc-specs/genexp-s-r16.mjs', taskId: 'ccgen-20260916-prop-s-r16' },
+    { label: 'S 复本 r17', spec: 'cc-specs/genexp-s-r17.mjs', taskId: 'ccgen-20260916-prop-s-r17' },
+    { label: 'S 复本 r18', spec: 'cc-specs/genexp-s-r18.mjs', taskId: 'ccgen-20260916-prop-s-r18' },
+    { label: 'S 复本 r19', spec: 'cc-specs/genexp-s-r19.mjs', taskId: 'ccgen-20260916-prop-s-r19' },
+    { label: 'S 复本 r20', spec: 'cc-specs/genexp-s-r20.mjs', taskId: 'ccgen-20260916-prop-s-r20' },
+    { label: 'S 复本 r21', spec: 'cc-specs/genexp-s-r21.mjs', taskId: 'ccgen-20260916-prop-s-r21' },
+    { label: 'S 复本 r22', spec: 'cc-specs/genexp-s-r22.mjs', taskId: 'ccgen-20260916-prop-s-r22' },
+    { label: 'S 复本 r23', spec: 'cc-specs/genexp-s-r23.mjs', taskId: 'ccgen-20260916-prop-s-r23' },
+    { label: 'S 复本 r24', spec: 'cc-specs/genexp-s-r24.mjs', taskId: 'ccgen-20260916-prop-s-r24' },
+    { label: 'S 复本 r25', spec: 'cc-specs/genexp-s-r25.mjs', taskId: 'ccgen-20260916-prop-s-r25' },
+    { label: 'S 复本 r26', spec: 'cc-specs/genexp-s-r26.mjs', taskId: 'ccgen-20260916-prop-s-r26' },
+  ],
+};
