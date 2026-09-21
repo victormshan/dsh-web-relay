@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-09-21T20:26:02.306Z",
+  "generatedAt": "2026-09-21T22:28:41.487Z",
   "how": "由 verify-tool-inventory.mjs --update 从权威引用点穷举生成；勿手改（改引用点后重跑）",
   "count": 48,
   "tools": [
@@ -218,7 +218,7 @@
         "regression",
         "verify-gates:GATES"
       ],
-      "bytes": 20189
+      "bytes": 23824
     },
     {
       "file": "verify-chain-run.mjs",
@@ -387,7 +387,7 @@
         "runbook",
         "verify-gates:GATES"
       ],
-      "bytes": 29152
+      "bytes": 29811
     }
   ]
 }

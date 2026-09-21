@@ -197,7 +197,11 @@ export function judgeWakeOccurrence(inp) {
   //   · 台账无邻近记录（如工具引入之前的历史重启）→ 4 未验证（证据缺失，绝不读成通过也不判失败）
   const DEBT_WINDOW_MS = 15 * 60 * 1000;
   if (restartRequests.length === 0) {
-    add('C-欠条纪律', 4, '日志中无主 agent 主动重启请求 → 本周期无可判定对象（未验证，不等于通过）');
+    // 2026-09-21 语义修正（与 B / J5 的既有模式对齐）：**无对象 → 不适用**，不是"未验证"。
+    // 起因：绝大多数周期没有重启，若这里返回 4，⑨ 会**长期**报未验证，使总判定永远停在 OK-WITH-GAPS ——
+    // 那会稀释"未验证"这个词的分量（噪声）。真正的牙齿在下面：有请求但台账无记录 → 4（证据缺失）；
+    // 台账明确 debt 为空 → 1（重启后必然无人续跑）。
+    add('C-欠条纪律', 0, '日志中无主 agent 主动重启请求 → 本周期**无对象可判**（不适用；无对象≠未验证，与 B/J5 同模式）');
   } else {
     const rr = restartRequests[restartRequests.length - 1];
     const reqAt = t(rr.requestedAt);
@@ -244,7 +248,7 @@ export function judgeWakeOccurrence(inp) {
     if (!lastBoot) {
       add('D-清单不得提前消费', 4, '无启动痕迹 → 无法判定"清单是否在重启之后才被消费"（未验证，不等于通过）');
     } else if (!cur) {
-      add('D-清单不得提前消费', 4, '无重启核对清单信号（主槽/队列均无）→ 本判据无可判定对象（未验证，不等于通过）');
+      add('D-清单不得提前消费', 0, '无重启核对清单信号（主槽/队列均无）→ 本判据**无对象可判**（不适用；无对象≠未验证，与 B/C/J5 同模式）');
     } else if (cur.acknowledgedAt) {
       // 2026-09-20 修（真实命中后的假失败）：清单**已销账**即生命周期闭环 → 不再判"提前消费"。
       // 不修的后果实测：清单销账后 D 仍按它的历史唤醒判 FAIL，**永久判红**（⑨ 一直红、审计一直 ACTION-NEEDED），
@@ -358,10 +362,10 @@ if (process.argv.includes('--selftest')) {
       { ...base, wakeLines: [WL({ id: 'other-signal#g1' })] }, 0],
     ['[NEG] 台账为空 + 清单已跨 boot 消费 → 仅 C 未验证(4)（D 不因此假失败）',
       { ...base, debtLedger: [] }, 4],
-    ['[POS] 无重启待办信号（signals 里没有清单）→ B 不要求唤醒；D 无对象报未验证',
-      { ...base, signals: [{ id: 'y', chainId: 'other', at: '2026-09-19T22:39:00.000Z', acknowledgedAt: '2026-09-19T22:40:30.000Z' }] }, 4],
-    ['[NEG] 无重启请求 → 未验证(4)，不得默认通过',
-      { ...base, restartRequests: [] }, 4],
+    ['[POS] 无重启待办信号（signals 里没有清单）→ B 不要求唤醒；C/D **无对象 → 不适用（PASS 并注明）**',
+      { ...base, signals: [{ id: 'y', chainId: 'other', at: '2026-09-19T22:39:00.000Z', acknowledgedAt: '2026-09-19T22:40:30.000Z' }] }, 0],
+    ['[POS] 无重启请求 → C **无对象 → 不适用（PASS 并注明）**（牙齿仍在：有请求但台账无记录→4、debt 为空→1）',
+      { ...base, restartRequests: [] }, 0],
   ];
   let bad = 0;
   for (const [name, inp, expect] of cases) {

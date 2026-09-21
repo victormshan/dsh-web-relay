@@ -58,6 +58,25 @@ if (args.includes('--selftest-scope')) {
     ['[POS] 改动全在范围内 → 通过', { declaredCount: 2, changed: ['lib/a.js', 'lib/b.js'], allowed: A }, true],
     ['[NEG] 改动有越界 → 拒绝', { declaredCount: 2, changed: ['lib/a.js', 'lib/c.js'], allowed: A }, false],
   ];
+  // 证据来源选择的两侧自检（2026-09-21）：证明"已结算任务改用提交归属"**没有**削弱在飞任务的守卫。
+  const ecases = [
+    ['[NEG] 在飞任务：实时工作树有改动（含越界）→ 仍用实时工作树（守卫不变）',
+      { settled: false, liveChanged: ['lib/c.js'], commitChanged: ['lib/a.js'], commitSource: '提交 abc' }, 'lib/c.js'],
+    ['[POS] 已结算任务：工作树脏（主 agent 施工窗口）→ 用**提交归属**（那份改动不属于该任务）',
+      { settled: true, liveChanged: ['test/tmp.js'], commitChanged: ['lib/a.js', 'lib/b.js'], commitSource: '提交 abc' }, 'lib/a.js'],
+    ['[POS] 已结算任务但无归属提交（如失败任务从未提交）→ **不适用(SKIP)**，绝不退回实时工作树',
+      { settled: true, liveChanged: ['test/tmp.js'], commitChanged: null, commitSource: null }, '(不适用)'],
+    ['[POS] 在飞任务但工作树干净 → 用提交归属（原回退行为保留）',
+      { settled: false, liveChanged: [], commitChanged: ['lib/a.js'], commitSource: '提交 abc' }, 'lib/a.js'],
+  ];
+  let bad2 = 0;
+  for (const [name, input, expectFirst] of ecases) {
+    const got = chooseScopeEvidence(input);
+    const ok = got.applicable === false ? expectFirst === '(不适用)' : got.changed[0] === expectFirst;
+    if (!ok) bad2++;
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${name}（期望 ${expectFirst}，实际 applicable=${got.applicable} 首项=${got.changed[0]}）`);
+  }
+  console.log(`  证据来源用例：${ecases.length - bad2}/${ecases.length} 通过`);
   let bad = 0;
   for (const [name, input, expect] of cases) {
     const got = decideScope(input).ok;
@@ -65,8 +84,9 @@ if (args.includes('--selftest-scope')) {
     if (!ok) bad++;
     console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${name}（期望 ok=${expect}，实际 ok=${got}）`);
   }
-  console.log(`\nRESULT: ${cases.length - bad}/${cases.length} 通过`);
-  process.exit(bad ? 1 : 0);
+  const totalBad = bad + bad2;
+  console.log(`\nRESULT: ${cases.length + ecases.length - totalBad}/${cases.length + ecases.length} 通过`);
+  process.exit(totalBad ? 1 : 0);
 }
 
 // 0) 任务结算
@@ -89,31 +109,52 @@ const allowed = new Set([...declared, ...extraAllow].map((s) => s.replace(/\\/g,
 //      非零退出被链条读成 REJECT；-uall 会逐个列出文件，从源头避免目录项。
 //   ② 仍需防御性过滤非文件项（子模块/符号链接/异常路径等）：只保留真实文件或已删除项。
 const gs = spawnSync('git', ['-C', REPO, 'status', '--porcelain', '-uall'], { encoding: 'utf8' });
-let changed = (gs.stdout || '').split('\n').map((l) => l.trim()).filter(Boolean).map((l) => l.replace(/^(\?\?|M|A|D|\s)+/, '').trim()).map((c) => c.replace(/\\/g, '/'));
-changed = changed.filter((c) => {
+let liveChanged = (gs.stdout || '').split('\n').map((l) => l.trim()).filter(Boolean).map((l) => l.replace(/^(\?\?|M|A|D|\s)+/, '').trim()).map((c) => c.replace(/\\/g, '/'));
+liveChanged = liveChanged.filter((c) => {
   try { return fs.statSync(path.join(REPO, c)).isFile(); } catch { return true; } // 不存在（如已删除）→ 保留；目录 → 丢弃
 });
-let scopeSource = '工作树';
-if (changed.length === 0) {
-  // 在最近 N 条提交里按任务 id 找归属提交（链条的提交信息固定含 taskId）——
-  // 只查 HEAD 会漏判：任务提交之后往往还有 lesson/docs 等其它提交。
-  // 2026-09-15 修复：窗口原为 20，会**静默过期**——v1-1 的提交滑到第 27 位后，归属判定突然
-  // 变成「无产物」→ 一个早已 ACCEPT 的任务被判 REJECT（重启后回归套件因此假失败 1 项）。
-  // 改为默认 500（可用 DSH_RELAY_SCOPE_LOG_N 覆盖）：归属窗口不该成为随时间流逝而失效的隐式契约。
+
+// 归属提交（提交信息含 taskId）——见下方注释：窗口默认 500，避免"随时间流逝而失效的隐式契约"。
+const commitAttribution = () => {
   const SCOPE_LOG_N = Number(process.env.DSH_RELAY_SCOPE_LOG_N || 500);
   const logOut = String(spawnSync('git', ['-C', REPO, 'log', `-${SCOPE_LOG_N}`, '--pretty=%h%x09%s'], { encoding: 'utf8' }).stdout || '');
   const hit = logOut.split('\n').find((l) => l.includes(taskId));
-  if (hit) {
-    const sh = hit.split('\t')[0];
-    const show = spawnSync('git', ['-C', REPO, 'show', '--name-only', '--pretty=format:', sh], { encoding: 'utf8' });
-    changed = String(show.stdout || '').split('\n').map((s) => s.trim()).filter(Boolean).map((c) => c.replace(/\\/g, '/'));
-    scopeSource = `提交 ${sh}（提交信息含任务 id ${taskId}）`;
-  } else {
-    scopeSource = `无产物（工作树干净，且最近 ${SCOPE_LOG_N} 条提交的信息均不含任务 id ${taskId}）`;
+  if (!hit) return null;
+  const sh = hit.split('\t')[0];
+  const show = spawnSync('git', ['-C', REPO, 'show', '--name-only', '--pretty=format:', sh], { encoding: 'utf8' });
+  const files = String(show.stdout || '').split('\n').map((s) => s.trim()).filter(Boolean).map((c) => c.replace(/\\/g, '/'));
+  return { changed: files, source: `提交 ${sh}（提交信息含任务 id ${taskId}）` };
+};
+
+// 证据来源选择（2026-09-21 修正，抽成纯函数以便两侧自检）：
+//   事故：一次瞬态告警的真因是**主仓库**工作树在"主 agent 施工窗口"里是脏的（我改 test/ 未提交的那几分钟），
+//   而该判据把「实时工作树有改动」一律判成该任务"越界"。可被验证的历史任务（已结算）与今天的工作树**没有关系** ——
+//   那份改动属于"正在干活的人"（主 agent），不属于那个早已完成的任务。
+//   故：**已结算任务 → 优先用提交归属**（那才是属于它的产物）；**在飞任务 → 用实时工作树**（一字不改，仍能抓 cc 越界）。
+export function chooseScopeEvidence({ settled, liveChanged = [], commitChanged = null, commitSource = null, liveSource = '工作树' }) {
+  if (settled) {
+    if (commitChanged && commitChanged.length) return { changed: commitChanged, source: `${commitSource}｜已结算任务→用提交归属（实时工作树不属于该任务）`, applicable: true };
+    // 已结算 + 无归属提交（例：失败任务 cc-marker-missing，从未产生提交）→ **不适用**，绝不退回实时工作树：
+    // 那份改动属于**当前写入者**（主 agent 的施工窗口），归属到该任务是错的（2026-09-21 端到端实证抓到：
+    // 初版在此退回实时工作树，遇到脏树仍误报越界）。用 SKIP 明示"本次没有验证该任务的写入范围"，而不是 PASS。
+    return { changed: [], source: `${liveSource}→**不适用**：已结算任务且无归属提交；实时工作树属于当前写入者，不能归属到它`, applicable: false };
   }
+  if (liveChanged && liveChanged.length) return { changed: liveChanged, source: `${liveSource}｜在飞任务→用实时工作树`, applicable: true };
+  if (commitChanged && commitChanged.length) return { changed: commitChanged, source: `${commitSource}｜工作树干净→用提交归属`, applicable: true };
+  return { changed: [], source: '无产物', applicable: true };
 }
-const scopeDecision = decideScope({ declaredCount: declared.length, changed, allowed });
-rec('写入范围', scopeDecision.ok, `${scopeDecision.detail}（来源: ${scopeSource}${declared.length ? `；声明 ${declared.length} 个` : '；声明 0 个'}）`);
+
+const settled = fs.existsSync(path.join(CC, 'tasks', taskId, 'result.json'));
+const attr = commitAttribution();
+const ev = chooseScopeEvidence({ settled, liveChanged, commitChanged: attr?.changed ?? null, commitSource: attr?.source ?? null });
+const changed = ev.changed;
+const scopeSource = ev.source;
+if (!ev.applicable) {
+  skip('写入范围', `不适用（${scopeSource}${declared.length ? `；声明 ${declared.length} 个` : '；声明 0 个'}）`);
+} else {
+  const scopeDecision = decideScope({ declaredCount: declared.length, changed, allowed });
+  rec('写入范围', scopeDecision.ok, `${scopeDecision.detail}（来源: ${scopeSource}${declared.length ? `；声明 ${declared.length} 个` : '；声明 0 个'}）`);
+}
 console.log(`      改动清单: ${changed.join(', ') || '(空)'}`);
 
 // 3) 语法
