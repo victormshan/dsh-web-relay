@@ -4,7 +4,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { scanExprSignals, scanPendingSignals, exprFingerprint, evaluateWakeOutcomes, shouldSuppressWake } from '../lib/heartbeat-scan.js'
+import { scanExprSignals, scanPendingSignals, exprFingerprint, evaluateWakeOutcomes, shouldSuppressWake, shouldWakeOnStepTransition } from '../lib/heartbeat-scan.js'
 
 const now = Date.now()
 const base = (over) => ({
@@ -495,4 +495,63 @@ test('源码契约：lib/index.js heartbeatTick 内配额抑制路径早于 wake
   assert.match(body, /quotaResetsAt/, '台账抑制记录应含 quotaResetsAt 字段')
   assert.match(body, /agentWoken:\s*false/, '抑制记录 agentWoken 应为 false')
   assert.match(body, /shouldSuppressWake\(/, 'heartbeatTick 应调用 shouldSuppressWake 判定')
+})
+
+// ---- ccfeat-20260922-reopenwake（L-2026-0922-100）: 终态任务上的 reopen/start 已 approved 步骤不得再产生「请执行」交接 ----
+// 背景：补证据时对已 approved 步骤反复 reopen → 每次 reopen 都往会话队列堆一条「请执行 Step N」回合，
+// 收口后仍被逐条投递（实测 15 次 reopen → 收到 Step 7/5/6 三条陈旧唤醒，诱导重做已完成的工作）。
+test('shouldWakeOnStepTransition：终态 + 步骤已 approved → 抑制唤醒（返工动作不是新工作）', () => {
+  const step = { id: '5', status: 'approved' }
+  for (const state of [{ finalized: true, status: 'done' }, { finalized: false, status: 'paused' }, { finalized: false, status: 'stopped' }]) {
+    for (const action of ['reopen', 'start']) {
+      const r = shouldWakeOnStepTransition({ action, step, state })
+      assert.equal(r.wake, false, `${action} + 终态(${state.status}) 应抑制唤醒`)
+      assert.equal(r.suppressed, true)
+      assert.match(String(r.reason), /返工|终态/, '抑制必须给出可读原因（供留痕）')
+    }
+  }
+})
+
+test('shouldWakeOnStepTransition：未终态任务照常放行（reopen 是正常重提流程）', () => {
+  const step = { id: '5', status: 'approved' }
+  for (const status of ['open', 'executing']) {
+    const r = shouldWakeOnStepTransition({ action: 'reopen', step, state: { finalized: false, status } })
+    assert.equal(r.wake, true, `未终态(${status}) 必须照常唤醒`)
+    assert.equal(r.suppressed, false)
+  }
+})
+
+test('shouldWakeOnStepTransition：终态但步骤非 approved → 放行（仍可能是真实待办）', () => {
+  const state = { finalized: true, status: 'done' }
+  for (const st of ['pending', 'review', 'rejected', 'executing']) {
+    assert.equal(shouldWakeOnStepTransition({ action: 'reopen', step: { id: '5', status: st }, state }).wake, true, `步骤 ${st} 应放行`)
+  }
+})
+
+test('shouldWakeOnStepTransition：非 reopen/start 一律放行（本判据只管这两类交接）', () => {
+  const state = { finalized: true, status: 'done' }
+  const step = { id: '5', status: 'approved' }
+  for (const action of ['complete', 'approve', 'reject', 'resume', 'stop']) {
+    assert.equal(shouldWakeOnStepTransition({ action, step, state }).wake, true, `${action} 不应被本判据拦截`)
+  }
+})
+
+test('shouldWakeOnStepTransition：参数缺失/畸形 fail-open 放行（唤醒通路宁可多唤不可静默不唤）', () => {
+  assert.equal(shouldWakeOnStepTransition({}).wake, true)
+  assert.equal(shouldWakeOnStepTransition({ action: 'reopen' }).wake, true)
+  assert.equal(shouldWakeOnStepTransition({ action: 'reopen', step: null, state: null }).wake, true)
+  assert.equal(shouldWakeOnStepTransition({ action: 'reopen', step: { id: '5', status: 'approved' }, state: {} }).wake, true)
+})
+
+test('源码契约：lib/index.js 的 reopen/start 交接必须经 shouldWakeOnStepTransition 闸门', () => {
+  const src = readFileSync(fileURLToPath(new URL('../lib/index.js', import.meta.url)), 'utf8')
+  const i = src.indexOf("if (action === 'reopen' || action === 'start') {")
+  assert.ok(i >= 0, '应能定位 reopen/start 交接块')
+  const body = src.slice(i, i + 4000)
+  const gateIdx = body.indexOf('shouldWakeOnStepTransition(')
+  const wakeIdx = body.indexOf('await wakeMainAgent({ sessionId, handoffText })')
+  assert.ok(gateIdx >= 0, '交接块内必须调用 shouldWakeOnStepTransition')
+  assert.ok(wakeIdx >= 0, '交接块内应有 wakeMainAgent 调用')
+  assert.ok(gateIdx < wakeIdx, '闸门判定必须在 wakeMainAgent 调用之前')
+  assert.match(body, /suppressed-rework-on-terminal/, '抑制时必须有可 grep 的留痕 decision')
 })
