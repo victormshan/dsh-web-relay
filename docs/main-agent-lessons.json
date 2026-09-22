@@ -1570,6 +1570,101 @@
         "L-2026-0920-093",
         "L-2026-0919-087"
       ]
+    },
+    {
+      "id": "L-2026-0922-095",
+      "title": "给工作区做 `git init` 会改变\"世界状态\"，凡以\"候选目录是 git 根\"作为**唯一**判据的解析器都会随之改变行为",
+      "category": "engineering-action",
+      "layer": "L3",
+      "trigger": "为纳入版本控制而给宿主工作区 git init；或任何\"让某个目录从非 git 变成 git\"的动作",
+      "decision": "① 执行前先穷举\"以 git 根为判据\"的消费方（本会话实测两处：test/shadow-gate.test.js 硬编码工作区路径、lib/shadow-gate.js 的 shadowRepoCandidates 把 base 排第一）；② 判据加**仓库特征**（根下 package.json 且 name 匹配），不要只判\"是 git 根\"；③ 动作后立刻跑受影响测试与门禁，把\"世界状态变更\"当成一次交付对待",
+      "rationale": "「是不是 git 仓库」是环境属性而非意图声明。工作区一旦入 git，任何\"第一个候选是 git 根就用它\"的短路逻辑都会改判——代码没变、行为变了。本会话该副作用先后击穿两处：影子门禁自检（测试夹具）与影子门禁运行时（把工作区当插件仓库根，L1/L2 全部误判、合规改动被拒）。",
+      "evidence": "实测：resolveRepoPath(\"D:\\dsh relay test\") 由 null 变为非 null → shadowRepoCandidates 第 1 候选短路 → complete 被 shadow-l1/l2 拒绝，报 Cannot find module \"D:\\dsh relay test\\lib\\client.js\"；同一批产物仓库侧 node --check 全 exit=0（证明非语法缺陷）。修复后 resolveRepoPath(工作区)=null、resolveShadowRepo({base:工作区})=\"D:/dsh-web-relay\"。",
+      "confidence": "high",
+      "status": "approved",
+      "suggested": "把\"以 git 根为唯一判据\"的解析点登记进 capabilities/registry.yaml，并在任何 git init / 换目录 / 换宿主的动作清单里加一步\"复查这些解析点\"。",
+      "confirmedBy": "expr-2026-09-22_17-42-08（V1 闭合被迫 disableShadow；V2 步8 修复并加反向夹具）",
+      "recordedAt": "2026-09-22T22:00:25.758Z",
+      "crossRef": [
+        "L-2026-0909-040",
+        "L-2026-0911-049",
+        "L-2026-0920-092"
+      ]
+    },
+    {
+      "id": "L-2026-0922-096",
+      "title": "审核/门禁的\"读产物\"必须以**审核方能解析的路径**交付：相对路径按谁的 cwd 解析，决定了证据是否成立",
+      "category": "engineering-action",
+      "layer": "L2",
+      "trigger": "Step List 声明 artifacts；或任何\"把产物路径交给另一个进程/角色去读\"的环节",
+      "decision": "① 声明 artifacts 时用**绝对路径**（或明确约定解析根并让消费方按该根解析）；② 审核脚本与门禁统一走同一个 resolveArtifactPathMulti（多候选根），不得各写一份；③ 判据只作用于**在办**对象的**路径型**项——历史终态对象与非路径描述（句子型说明）不得计入失败",
+      "rationale": "证据是否成立取决于\"谁能读到它\"，而不是\"我方盘上有它\"。本会话审核方按工作区 cwd 解析仓库相对路径 → 报\"无法读取产物\"并打回 7 步、触发熔断；而同一批产物在仓库侧完全正确。另一头：把该判据无差别套到全部历史 expr 上，一次刷出 100+ 条\"缺失\"，把历史包袱当成本周期违约。",
+      "evidence": "Step 2 单变量对照实验：路径改绝对后，同一份证据由\"双角色打回\"变为\"双角色通过（reviewedBy=external）\"；J10 校准后由 100+ FAIL 变为\"在办路径型 0 个 → 无可判定对象（不算失败）（跳过非路径描述 27、终态历史 330）\"。",
+      "confidence": "high",
+      "status": "approved",
+      "suggested": "在 verify-gates 与 ⑩ 保留\"多候选根 + 仅在办 + 路径型\"三件事的一体化实现，新增消费方一律 import，禁止复制。",
+      "confirmedBy": "expr-2026-09-22_17-42-08（V1 熔断根因之一；V2 步12 落地判据）",
+      "recordedAt": "2026-09-22T22:00:25.758Z",
+      "crossRef": [
+        "L-2026-0921-094",
+        "runbook §8.2 证据必须属于该对象"
+      ]
+    },
+    {
+      "id": "L-2026-0922-097",
+      "title": "断言\"过窄\"与断言\"永真\"同样是缺陷：先跑通真实实现，再定检测口径",
+      "category": "tooling-trap",
+      "layer": "L2",
+      "trigger": "为源码级/痕迹级断言写正则或特征检测时",
+      "decision": "① 写判据前先读一遍被检测的真实实现，把特征按\"语义\"而非\"某种写法\"表达；② 新判据上线前必须有一侧负控（注入缺陷必须 FAIL）与一侧真值（当前实现必须 PASS）双向证据；③ 真值侧 FAIL 时先怀疑判据而非实现",
+      "rationale": "本会话两次踩：J7 要求 protocolVersions 与 .map( 在 300 字符窗口内相邻，而真实实现是先赋局部变量再 map → 误 FAIL；J10 用单根解析历史产物 → 误 FAIL。两者都会把\"合规实现\"判成缺陷，进而诱发\"改实现去迁就断言\"——那是比漏检更危险的失败方向。",
+      "evidence": "J7 修前 FAIL（\"client.js 未见数据驱动渲染痕迹\"），改用\"出现 protocolVersions + 至少一处 .map( + contentKey 查表\"后 PASS；J10 修前 100+ 条 FAIL，改多根 + 范围校准后 PASS（并在 --selftest 保留注入型负控）。",
+      "confidence": "high",
+      "status": "approved",
+      "suggested": "把\"新增判据必须同时给出真值侧与负控侧证据\"写进教程/门禁自审清单。",
+      "confirmedBy": "expr-2026-09-22_17-42-08（V2 步10/12 主 agent 校准）",
+      "recordedAt": "2026-09-22T22:00:25.758Z",
+      "crossRef": [
+        "L-2026-0920-092",
+        "L-2026-0913-057"
+      ]
+    },
+    {
+      "id": "L-2026-0922-098",
+      "title": "新增/调整用例后必须同步**消费方**的清点期望，否则回归会报\"假失败\"",
+      "category": "engineering-action",
+      "layer": "L2",
+      "trigger": "给某个自检脚本增删用例、或改变其输出格式/条目数之后",
+      "decision": "① 找到所有以字符串形式断言该脚本输出的消费方（本会话：regression-post-restart.mjs 用 mustInclude 断言 RESULT: N/N）；② 按实测值同步；③ 同步时只改期望值，**不得**顺手改被测判定逻辑——并在提交信息里写明\"未修改判定逻辑\"",
+      "rationale": "回归套件把\"脚本输出里的计数\"当契约，这是有意设计（防静默退化），代价是用例数一变就要同步消费方。漏同步会让回归报失败，而失败原因与代码质量无关——若不追根因就\"修代码去过测试\"，会造成真实破坏。",
+      "evidence": "实测三处过期：verify-gates --selftest 4/4→8/8、audit-all --selftest 13/13→15/15、verify-iteration-state --selftest 19/19→39/39；同步后 44/47 → 47/47（中途还误填 35/35，按实测纠正为 8/8）。",
+      "confidence": "high",
+      "status": "approved",
+      "suggested": "消费方断言改为\"必须含 RESULT: 且 FAIL 计数为 0\"这类**语义**断言，减少对具体数字的耦合；若要保留数字，加入脚本输出变更检查清单。",
+      "confirmedBy": "expr-2026-09-22_17-42-08（V2 重启后回归 44/47 → 47/47）",
+      "recordedAt": "2026-09-22T22:00:25.758Z",
+      "crossRef": [
+        "L-2026-0920-092"
+      ]
+    },
+    {
+      "id": "L-2026-0922-099",
+      "title": "`/ask` 的 body 声明与 prompt 文本声明是**两个来源**：必须显式拒绝而不是静默忽略/合并",
+      "category": "engineering-action",
+      "layer": "L1",
+      "trigger": "自动迭代声明（iterations/finalAcceptance/autoDecision）通过非受控入口传入时",
+      "decision": "① 非受控入口（body）与受控来源（prompt/answer 文本）不一致 → 返回 400 并说明；② 一致 → 放行；③ 完全不带 → 行为不变（向后兼容）；④ 判定按**字段值**比较（传默认值不构成冲突，须在文档与销账记录里明说这处偏宽）；⑤ 补全声明走受控入口 /steps/declare",
+      "rationale": "静默忽略会让\"声明了 2 版却按 1 版跑\"，而且盘上无任何异常痕迹——最坏的一类缺陷（意图与落盘不一致且无人能发现）。合并则引入两个来源，正是\"版本口径分裂\"的同族病。",
+      "evidence": "实测：body 传 iterations:2/autoDecision:true/finalAcceptance 而文本无声明 → 落盘仍 1/false/null（只能改走 /steps/declare 补）；修复后同情形 HTTP 400；body 与文本一致 → 200；完全不带 → 200 channel=web-gemini。",
+      "confidence": "high",
+      "status": "approved",
+      "suggested": "受控入口 /steps/declare 作为唯一补全通道；在协议文本里写明\"声明只写一处\"。",
+      "confirmedBy": "expr-2026-09-22_17-42-08（V2 步9；修复前 V1 启动时实测踩中）",
+      "recordedAt": "2026-09-22T22:00:25.758Z",
+      "crossRef": [
+        "L-2026-0903-002",
+        "L-2026-0920-092"
+      ]
     }
   ]
 }
