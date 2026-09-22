@@ -7,6 +7,7 @@
 
 | dsh-web-relay | 可用 dsh 版本 | 依赖 | 实测证据 |
 |---|---|---|---|
+| **4.11.1** | **0.1.0-rc.7 线** 与 **0.1.5+（新线）** | 同 4.11.0 的两条版本线；修复：终态实验上 reopen/start 已 approved 步骤不再产生「请执行」交接唤醒（避免陈旧回合堆叠，见 L-2026-0922-100）。 |
 | **4.11.0**（协议版本收口版） | **0.1.0-rc.7 线** 与 **0.1.5+（新线）** | 同 4.10.0 的两条版本线；新增协议版本元数据单一来源、只读端点 `/protocol/versions`、影子门禁仓库根解析修复（候选须同时是 git 根且 `package.json.name === 'dsh-web-relay'`，防止误判宿主工作区为插件仓库根）、`/ask` body 声明冲突显式拒绝。 |
 | **4.10.0**（审计扩层版） | **0.1.0-rc.7 线** 与 **0.1.5+（新线）** | 同 4.9.7 的两条版本线；新增审计层 ⑨「唤醒通路实际发生」⑩「迭代状态机」⑪「事件路径演练」、熔断登记 needs-human、版间门 iterationGates 落盘、统一任务身份 `lib/task-ref.mjs`、单写者锁与信号写入守卫。 |
 | **4.9.7**（新线兼容版） | **0.1.0-rc.7 线** 与 **0.1.5+（新线）** | rc.7：宿主自带 `apiProxy`；新线：需随包 `shim/dsh-apiproxy-shim`。两者均需 `webServer` / `fs` / `sandboxPolicy` / `agentDefaultModel` | 2026-09-13 在 **0.1.5-rc.1** 宿主实测：boot 无 `did not activate`；`GET /dsh-web-relay/status` → `apiProxyAvailable:true`；`/dsh-web-relay/health-check` → `ok:true` |
