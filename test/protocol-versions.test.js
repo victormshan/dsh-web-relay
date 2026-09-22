@@ -108,6 +108,61 @@ test('⑤ 源码级：client.js 不再含整串硬编码版本列表 / localStor
   assert.match(clientSrc, /contentKey/, '前端正文取值应走 contentKey 映射')
 })
 
+test('⑥ isConcurrent 别名：每项存在且与 concurrent 同值（两者并存，不得只留其一）', () => {
+  assert.equal(PROTOCOL_VERSIONS_META.length, 6)
+  for (const m of PROTOCOL_VERSIONS_META) {
+    assert.equal(typeof m.isConcurrent, 'boolean', `${m.version} 应有布尔 isConcurrent`)
+    assert.equal(typeof m.concurrent, 'boolean', `${m.version} 应保留布尔 concurrent（前端仍按此消费）`)
+    assert.equal(m.isConcurrent, m.concurrent, `${m.version} isConcurrent 必须与 concurrent 同值`)
+  }
+})
+
+// 从真实 lib/index.js 里跑出 protocolVersionsHandler 本体（不是测试重写一份镜像逻辑）：
+// 只读端点必须直接返回 PROTOCOL_VERSIONS_META 这一份常量，禁止在 handler 内重建数组。
+const indexSrcForHandler = fs.readFileSync(join(root, 'lib', 'index.js'), 'utf8')
+
+function loadProtocolVersionsHandler() {
+  const m = indexSrcForHandler.match(/const protocolVersionsHandler = \(req, res\) => \{\n([\s\S]*?)\n  \}\n/)
+  assert.ok(m, 'lib/index.js 应定义 protocolVersionsHandler')
+  const body = m[1]
+  // eslint-disable-next-line no-new-func
+  return new Function('req', 'res', 'CORS', 'PROTOCOL_VERSIONS_META', 'json', body)
+}
+
+test('⑦ GET /dsh-web-relay/protocol/versions：路由已注册，OPTIONS 返回 204 + 既有 CORS 头', () => {
+  assert.match(
+    indexSrcForHandler,
+    /webServer\.register\(\{ kind: 'exact', path: '\/dsh-web-relay\/protocol\/versions', handler: protocolVersionsHandler \}\)/,
+    '应以 exact 路由注册 /dsh-web-relay/protocol/versions'
+  )
+  const CORS_MOCK = { 'content-type': 'application/json', 'access-control-allow-origin': '*' }
+  const handler = loadProtocolVersionsHandler()
+  let written = null
+  const res = { writeHead: (code, headers) => { written = { code, headers }; return res }, end: () => res }
+  handler({ method: 'OPTIONS' }, res, CORS_MOCK, PROTOCOL_VERSIONS_META, () => { throw new Error('OPTIONS 不应调用 json()') })
+  assert.deepEqual(written, { code: 204, headers: CORS_MOCK }, 'OPTIONS 应 204 + 既有只读端点同款 CORS 头')
+})
+
+test('⑧ /protocol/versions 直接复用 PROTOCOL_VERSIONS_META（同一份来源，非重建）：6 项且与 /context 顺序一致', () => {
+  const handler = loadProtocolVersionsHandler()
+  let jsonCall = null
+  const res = {}
+  handler({ method: 'GET' }, res, {}, PROTOCOL_VERSIONS_META, (r, code, payload) => { jsonCall = { res: r, code, payload } })
+  assert.ok(jsonCall, 'GET 应调用 json() 输出响应')
+  assert.equal(jsonCall.code, 200)
+  assert.equal(jsonCall.res, res)
+  assert.equal(jsonCall.payload.ok, true)
+  // 身份相等：handler 传给 json() 的 versions 就是同一个 PROTOCOL_VERSIONS_META 引用，
+  // 不是 handler 内另起的一份拷贝/重排——因此天然与 /context.protocolVersions 顺序一致。
+  assert.equal(jsonCall.payload.versions, PROTOCOL_VERSIONS_META, 'versions 必须是同一个数组引用（禁止重建）')
+  assert.equal(jsonCall.payload.versions.length, 6)
+  assert.deepEqual(
+    jsonCall.payload.versions.map((v) => v.version),
+    ['v1.5', 'v1.6', 'v1.7', 'v1.8', 'v1.9', 'v2.0'],
+    '应与 /context.protocolVersions（同一份 PROTOCOL_VERSIONS_META）顺序一致'
+  )
+})
+
 test('回归：既有用例锚点——client.js 仍导出 resolveProtocolVersion，且 index.js isConcurrent 改读元数据（无手写版本链）', () => {
   const indexSrc = fs.readFileSync(join(root, 'lib', 'index.js'), 'utf8')
   assert.match(indexSrc, /PROTOCOL_VERSIONS_META/, 'lib/index.js 应定义 PROTOCOL_VERSIONS_META')
