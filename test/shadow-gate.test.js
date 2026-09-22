@@ -4,6 +4,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { execSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { checkL1Gate, resolveRepoPath, shouldUseShadow, runShadowGC, executeRollbackBaseline, runL2ShadowGate, getGitHead, gcScheduleMs, shadowRepoCandidates, resolveShadowRepo } from '../lib/shadow-gate.js'
 
@@ -18,11 +19,37 @@ const LIB_DIR = path.dirname(fileURLToPath(new URL('../lib/shadow-gate.js', impo
 const REAL_REPO_ROOT = resolveRepoPath(LIB_DIR)
 
 test('TC-Green: repoPath 识别 + L1 语法预检通过（合法文件）', () => {
-  assert.equal(resolveRepoPath(REPO), 'D:/DSH')
+  // v4.11.0 步8：resolveRepoPath 新增仓库特征校验（package.json.name==='dsh-web-relay'）。
+  // D:/DSH 是外层聚合 git 仓库（本身不含 package.json），只满足"是 git 根"，不再被误判为插件仓库根——
+  // 这条断言曾经是 'D:/DSH'，那正是本次要修的缺陷本体（旧逻辑把"任意 git 根"当作合法结果）。
+  assert.equal(resolveRepoPath(REPO), null)
+  assert.equal(resolveRepoPath(REAL_REPO_ROOT), REAL_REPO_ROOT) // 真正插件仓库根：git 根 + 特征吻合 → 采纳
   assert.equal(resolveRepoPath(NON_REPO), null)
   const r = checkL1Gate({ cwd: REPO, files: ['D:/DSH/dsh-web-relay/lib/shadow-gate.js'] })
   assert.equal(r.ok, true)
   assert.equal(r.errors.length, 0)
+})
+
+// ---- v4.11.0 步8：反向夹具 —— 候选 base 是 git 仓库但不含 dsh-web-relay 的 package.json ----
+test('反向夹具：candidate base 是 git 仓库但缺 dsh-web-relay package.json → 修前误判为仓库根，修后正确越过它解析到插件仓库根', () => {
+  const fakeHost = fs.mkdtempSync(path.join(os.tmpdir(), 'shadow-fakehost-'))
+  const qq = (p) => '"' + String(p).replace(/"/g, '\\"') + '"'
+  execSync(`git init -q ${qq(fakeHost)}`, { encoding: 'utf8' })
+  try {
+    // 修前逻辑镜像（仅 git 根判定，无仓库特征校验）：会把 fakeHost 自己判成"仓库根"——这是缺陷本体，
+    // 证明它是一个"看起来合法"的错误结果（不是空仓库根，而是一个真实但错误的 git 根）。
+    const legacyRoot = execSync(`git -C ${qq(fakeHost)} rev-parse --show-toplevel`, { encoding: 'utf8' }).trim()
+    assert.ok(legacyRoot.length > 0)
+    assert.notEqual(legacyRoot, REAL_REPO_ROOT) // 错误命中：不是真正的插件仓库根
+    // 修后：resolveRepoPath 对 fakeHost 做特征校验（无 package.json）→ null，不再被候选循环短路采纳
+    assert.equal(resolveRepoPath(fakeHost), null)
+    // resolveShadowRepo：candidate 顺序与 env 覆盖语义不变，仅 base 候选因不满足特征被跳过，
+    // 循环 continue 到下一候选（moduleDir，缺省为本模块所在目录）→ 正确解析到插件仓库根
+    const got = resolveShadowRepo({ base: fakeHost, payload: {}, env: {} })
+    assert.equal(got, REAL_REPO_ROOT)
+  } finally {
+    fs.rmSync(fakeHost, { recursive: true, force: true })
+  }
 })
 
 test('TC-Red: L1 拦截（注入语法错误的文件 → ok:false + 错误清单）', () => {

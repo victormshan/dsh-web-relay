@@ -76,7 +76,8 @@ import {
   assessAutoIterDecl,
   generateCapabilitiesList,
   computeAutoIterDeclareUpdate,
-  buildAutoIterDeclAudit
+  buildAutoIterDeclAudit,
+  detectAskBodyDeclConflict
 } from '../lib/autoiter-decl.js'
 
 test('assessAutoIterDecl：iterations=3 + autoDecision=false → halfState:true，hint 含严格块示例', () => {
@@ -188,6 +189,76 @@ test('computeAutoIterDeclareUpdate：未携带 autoDecision 时既有 true 不�
   const r = computeAutoIterDeclareUpdate(cur, { iterations: 4 })
   assert.equal(r.ok, true)
   assert.equal(r.after.autoDecision, true)
+})
+
+// ---------------------------------------------------------------------------
+// v4.11.0 步9: /ask body 显式声明与文本声明冲突 → 显式拒绝（不合并、不静默忽略）
+// ---------------------------------------------------------------------------
+test('detectAskBodyDeclConflict：body 不带 iterations/finalAcceptance/autoDecision 任一字段 → 不冲突（向后兼容，行为与此前完全一致）', () => {
+  const textDecl = { iterations: 1, finalAcceptance: null, autoDecision: false }
+  assert.deepEqual(detectAskBodyDeclConflict({}, textDecl), { conflict: false })
+  assert.deepEqual(detectAskBodyDeclConflict({ provider: 'manual', prompt: 'x' }, textDecl), { conflict: false })
+})
+
+test('detectAskBodyDeclConflict：body 与文本解析结果一致 → 不冲突（通过）', () => {
+  const textDecl = { iterations: 3, finalAcceptance: 'E2E 全过', autoDecision: true }
+  const r = detectAskBodyDeclConflict({ iterations: 3, finalAcceptance: 'E2E 全过', autoDecision: true }, textDecl)
+  assert.deepEqual(r, { conflict: false })
+})
+
+test('detectAskBodyDeclConflict：body 显式传 iterations 与文本不一致（含"文本未声明→落为默认值 1"的情形）→ 冲突，说明性错误', () => {
+  const textDecl = { iterations: 1, finalAcceptance: null, autoDecision: false } // 文本未声明，落为默认值
+  const r = detectAskBodyDeclConflict({ iterations: 2 }, textDecl)
+  assert.equal(r.conflict, true)
+  assert.ok(typeof r.error === 'string' && r.error.length > 0)
+  assert.ok(r.error.includes('不一致') || r.error.includes('文本未声明'))
+  assert.ok(r.error.includes('iterations'))
+})
+
+test('detectAskBodyDeclConflict：body 显式传 autoDecision:true 而文本未声明（默认 false）→ 冲突', () => {
+  const textDecl = { iterations: 1, finalAcceptance: null, autoDecision: false }
+  const r = detectAskBodyDeclConflict({ autoDecision: true }, textDecl)
+  assert.equal(r.conflict, true)
+  assert.ok(r.error.includes('autoDecision'))
+})
+
+test('detectAskBodyDeclConflict：body 显式传 finalAcceptance 而文本未声明（默认 null）→ 冲突', () => {
+  const textDecl = { iterations: 1, finalAcceptance: null, autoDecision: false }
+  const r = detectAskBodyDeclConflict({ finalAcceptance: '验收标准 X' }, textDecl)
+  assert.equal(r.conflict, true)
+  assert.ok(r.error.includes('finalAcceptance'))
+})
+
+test('detectAskBodyDeclConflict：多字段同时冲突 → 全部列出，不只报第一个', () => {
+  const textDecl = { iterations: 1, finalAcceptance: null, autoDecision: false }
+  const r = detectAskBodyDeclConflict({ iterations: 5, autoDecision: true }, textDecl)
+  assert.equal(r.conflict, true)
+  assert.ok(r.error.includes('iterations') && r.error.includes('autoDecision'))
+})
+
+test('detectAskBodyDeclConflict：只做检测拒绝，不做合并——不返回 merged/after 之类的合并结果字段', () => {
+  const textDecl = { iterations: 1, finalAcceptance: null, autoDecision: false }
+  const r = detectAskBodyDeclConflict({ iterations: 2 }, textDecl)
+  assert.ok(!('merged' in r))
+  assert.ok(!('after' in r))
+})
+
+test('detectAskBodyDeclConflict：畸形入参（null/数组/非对象）不抛错，按空对象处理', () => {
+  const textDecl = { iterations: 1, finalAcceptance: null, autoDecision: false }
+  for (const bad of [null, undefined, 'x', 42, []]) {
+    assert.doesNotThrow(() => detectAskBodyDeclConflict(bad, textDecl))
+    assert.deepEqual(detectAskBodyDeclConflict(bad, textDecl), { conflict: false })
+  }
+})
+
+test('source 标记：/ask 入口在 saveRecord 之前用 detectAskBodyDeclConflict 校验 body 与文本声明，冲突时 400（lib/index.js v4.11.0 步9）', () => {
+  const src = fs.readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8')
+  assert.ok(src.includes("detectAskBodyDeclConflict(payload, askDeclFromText)"))
+  assert.ok(src.includes('if (bodyDeclConflict.conflict) return json(res, 400'))
+  const idxConflict = src.indexOf('const bodyDeclConflict = detectAskBodyDeclConflict(')
+  const idxSave = src.indexOf('const { id, relPath, fileTarget } = await saveRecord({\n        base, safePolicy, prompt, answer, channel: askChannel,')
+  assert.ok(idxConflict > -1 && idxSave > -1, '两处代码都必须存在')
+  assert.ok(idxConflict < idxSave, '冲突校验必须在 saveRecord 落盘之前短路返回，避免冲突请求也被落盘')
 })
 
 // source 标记：确认 lib/index.js 侧的接线未回归为「只写文档没进外呼 payload」
