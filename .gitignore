@@ -56,3 +56,8 @@ bridge.token
 
 # ── 根目录过程稿文档（正式手册在 dsh-web-relay 仓库里；这些是过程稿）──
 *.md
+
+# V2 �о����в��audit-all --json ������� �� �� J9 ���ѣ�ÿ���ܶ��䣬����⣩
+audit-latest.json
+_audit-latest.md
+_audit-negctl.md
