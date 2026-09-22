@@ -87,7 +87,7 @@ const cases = [
   // ⑥ 设计2 探针的两侧区分力（bug 版必失败 + 修复版必通过）
   { name: '设计2 探针两侧区分力', args: ['probes/selftest-probes.mjs'], expectExit: 0, mustInclude: ['RESULT: PASS'] },
   // ⑦ 门禁自审 meta-gate 自身的两侧自检（它必须能拦下缺 POS/NEG 的输出与坏退出码）
-  { name: '门禁自审自检(meta)', args: ['verify-gates.mjs', '--selftest'], expectExit: 0, mustInclude: ['RESULT: 4/4 PASS'] },
+  { name: '门禁自审自检(meta)', args: ['verify-gates.mjs', '--selftest'], expectExit: 0, mustInclude: ['RESULT: 8/8 PASS'] },
   // ⑧ 链条运行审计（状态不变量 + 重派循环签名识别）
   { name: '链条运行审计自检', args: ['verify-chain-run.mjs', '--selftest'], expectExit: 0, mustInclude: ['RESULT: 12/12'] },
   // ⑨ 交付接地（宿主是否真的加载了仓库代码；此处只跑其自检，实跑按需）
@@ -95,7 +95,7 @@ const cases = [
   // ⑩ 事实复跑门禁（报告/注释里的数字可复跑；此处只跑其自检，实跑按需）
   { name: '事实复跑门禁自检', args: ['verify-claims.mjs', '--selftest'], expectExit: 0, mustInclude: ['RESULT: 8/8'] },
   // ⑪ 四层审计统一入口（③④⑤⑥ 必须能被一条命令跑完，且"层级缺失/工具崩溃"要与"判定失败"区分）
-  { name: '分层审计入口自检', args: ['audit-all.mjs', '--selftest'], expectExit: 0, mustInclude: ['RESULT: 13/13'] },
+  { name: '分层审计入口自检', args: ['audit-all.mjs', '--selftest'], expectExit: 0, mustInclude: ['RESULT: 15/15 PASS'] },
   // ⑫ 周期审计入口 run-audit.cmd 的静态契约（ASCII/**可传递地**真的跑到审计/退出码必须透传，不得吞成 0）
   { name: '周期审计入口契约', args: ['verify-run-audit-cmd.mjs', '--selftest'], expectExit: 0, mustInclude: ['RESULT: 19/19'] },
   // ⑬ 「需要人介入」信号（会触发唤醒主 agent，故必须证明"不该唤醒的不唤醒" + 同源只叫一次 + 队列不丢告警）
@@ -117,7 +117,7 @@ const cases = [
   // ㉒ 解析器与写方契约（当天同类格式 bug 连犯两次：readSignals 扁平记录 / readDebtLedger 字段名 → 钉死契约）
   { name: '唤醒通路解析器契约自检', args: ['verify-wake-occurrence.mjs', '--selftest-parsers'], expectExit: 0, mustInclude: ['RESULT: 5/5'] },
   // ㉓㉔ 2026-09-20 新增：⑩ 迭代状态机（唯一没有审计层的任务载体）
-  { name: '迭代状态机自检', args: ['verify-iteration-state.mjs', '--selftest'], expectExit: 0, mustInclude: ['RESULT: 19/19'] },
+  { name: '迭代状态机自检', args: ['verify-iteration-state.mjs', '--selftest'], expectExit: 0, mustInclude: ['RESULT: 39/39 PASS'] },
   { name: '迭代状态机解析器契约自检', args: ['verify-iteration-state.mjs', '--selftest-parsers'], expectExit: 0, mustInclude: ['RESULT: 13/13'] },
   // ㉕ 2026-09-20 新增：**事件驱动路径的行为验证**（熔断登记 / 版间门落盘）。
   // 用生产代码路径合成真实事件（临时 base，零污染）；信号侧带"只清自己条目"护栏，故可进回归套件常驻覆盖。
