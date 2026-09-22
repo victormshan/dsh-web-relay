@@ -4,7 +4,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { scanExprSignals, scanPendingSignals, exprFingerprint, evaluateWakeOutcomes, shouldSuppressWake, shouldWakeOnStepTransition } from '../lib/heartbeat-scan.js'
+import { scanExprSignals, scanPendingSignals, exprFingerprint, evaluateWakeOutcomes, shouldSuppressWake, shouldWakeOnStepTransition, coalesceWake, buildWakeKey, WAKE_COALESCE_MS_DEFAULT } from '../lib/heartbeat-scan.js'
 
 const now = Date.now()
 const base = (over) => ({
@@ -554,4 +554,76 @@ test('源码契约：lib/index.js 的 reopen/start 交接必须经 shouldWakeOnS
   assert.ok(wakeIdx >= 0, '交接块内应有 wakeMainAgent 调用')
   assert.ok(gateIdx < wakeIdx, '闸门判定必须在 wakeMainAgent 调用之前')
   assert.match(body, /suppressed-rework-on-terminal/, '抑制时必须有可 grep 的留痕 decision')
+})
+
+// ---- ccfeat-20260922-wakecoalesce: 唤醒合并/去重（同一逻辑目标的重复唤醒不追加回合）----
+// 背景：wakeMainAgent 用 mode:'queue' 追加整回合且不去重，同一步骤反复触发会线性堆积
+// （实测单 expr 峰值队列 54，日志里「请执行 Step N」交接 60 条，同一 Step 7 占 8 条）。
+test('buildWakeKey：同一逻辑目标 → 同一键；不同步骤/动作/会话 → 不同键', () => {
+  const a = buildWakeKey({ sessionId: 's1', action: 'reopen', exprId: 'e1', stepId: '7' })
+  assert.equal(a, buildWakeKey({ sessionId: 's1', action: 'reopen', exprId: 'e1', stepId: '7' }), '同输入必须同键')
+  assert.notEqual(a, buildWakeKey({ sessionId: 's1', action: 'reopen', exprId: 'e1', stepId: '8' }), '不同步骤必须不同键')
+  assert.notEqual(a, buildWakeKey({ sessionId: 's1', action: 'start', exprId: 'e1', stepId: '7' }), '不同动作必须不同键')
+  assert.notEqual(a, buildWakeKey({ sessionId: 's2', action: 'reopen', exprId: 'e1', stepId: '7' }), '不同会话必须不同键')
+  assert.ok(buildWakeKey({ sessionId: 's1', action: 'heartbeat-pending' }).startsWith('s1|heartbeat-pending'), '无 exprId 也应可构造')
+})
+
+test('coalesceWake：首次放行并记录时刻', () => {
+  const now = 1_000_000
+  const r = coalesceWake({ logicalKey: 'k', lastWakeAt: {}, now })
+  assert.equal(r.send, true)
+  assert.equal(r.suppressed, false)
+  assert.equal(r.lastWakeAt.k, now, '必须记录本次投递时刻')
+})
+
+test('[NEG] coalesceWake：冷却窗内重复触发 → 不追加回合（这是防堆积的关键）', () => {
+  const t0 = 1_000_000
+  const first = coalesceWake({ logicalKey: 'k', lastWakeAt: {}, now: t0 })
+  const second = coalesceWake({ logicalKey: 'k', lastWakeAt: first.lastWakeAt, now: t0 + 1000 })
+  assert.equal(second.send, false, '1 秒后重复必须被合并（不追加回合）')
+  assert.equal(second.suppressed, true)
+  assert.match(String(second.reason), /冷却窗内重复唤醒/, '必须给出可读原因（供留痕 grep）')
+  // 边界：恰好等于冷却窗 → 放行
+  const atEdge = coalesceWake({ logicalKey: 'k', lastWakeAt: first.lastWakeAt, now: t0 + WAKE_COALESCE_MS_DEFAULT })
+  assert.equal(atEdge.send, true, '恰好到冷却窗边界应放行')
+  // 窗内反复触发不会"漏窗"：时刻被刷新，窗外仍从最后一次算起
+  const third = coalesceWake({ logicalKey: 'k', lastWakeAt: second.lastWakeAt, now: t0 + 2000 })
+  assert.equal(third.send, false)
+  assert.equal(third.lastWakeAt.k, t0 + 2000, '窗内抑制也要刷新时刻（防窗外补唤）')
+})
+
+test('[NEG] coalesceWake：不同逻辑目标互不影响（防误杀真实待办）', () => {
+  const t0 = 1_000_000
+  const a = coalesceWake({ logicalKey: 'step7', lastWakeAt: {}, now: t0 })
+  const b = coalesceWake({ logicalKey: 'step8', lastWakeAt: a.lastWakeAt, now: t0 + 1000 })
+  assert.equal(b.send, true, '另一目标必须放行')
+  assert.equal(b.suppressed, false)
+})
+
+test('coalesceWake：缺 key / now 非法 → fail-open 放行（唤醒通路宁可多唤不可静默不唤）', () => {
+  assert.equal(coalesceWake({ logicalKey: null, lastWakeAt: {}, now: 1 }).send, true)
+  assert.equal(coalesceWake({ logicalKey: 'k', lastWakeAt: {}, now: NaN }).send, true)
+  assert.equal(coalesceWake({ logicalKey: 'k', lastWakeAt: {}, now: 0 }).send, true)
+  assert.equal(coalesceWake({}).send, true)
+})
+
+test('coalesceWake：冷却窗可注入（便于按场景调参）', () => {
+  const t0 = 5_000_000
+  const r = coalesceWake({ logicalKey: 'k', lastWakeAt: { k: t0 }, now: t0 + 30_000, coalesceMs: 60_000 })
+  assert.equal(r.send, false, '30s < 60s 应抑制')
+  const r2 = coalesceWake({ logicalKey: 'k', lastWakeAt: { k: t0 }, now: t0 + 30_000, coalesceMs: 10_000 })
+  assert.equal(r2.send, true, '30s > 10s 应放行')
+})
+
+test('源码契约：wakeMainAgent 的去重判定必须早于 apiProxy 调用', () => {
+  const src = readFileSync(fileURLToPath(new URL('../lib/index.js', import.meta.url)), 'utf8')
+  const i = src.indexOf('async function wakeMainAgent(')
+  assert.ok(i >= 0, '应能定位 wakeMainAgent')
+  const body = src.slice(i, i + 2200)
+  const coalesceIdx = body.indexOf('coalesceWake(')
+  const promptIdx = body.indexOf('apiProxy.sessions.prompt(')
+  assert.ok(coalesceIdx >= 0, 'wakeMainAgent 内必须调用 coalesceWake')
+  assert.ok(promptIdx >= 0, 'wakeMainAgent 内应仍有 apiProxy.sessions.prompt 调用')
+  assert.ok(coalesceIdx < promptIdx, '去重判定必须在真正投递之前（否则照旧堆积）')
+  assert.match(body, /suppressed-coalesced/, '抑制时必须有可 grep 的留痕 decision')
 })
