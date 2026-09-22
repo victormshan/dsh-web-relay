@@ -54,6 +54,28 @@ export const REQUIRED_LAYERS = [
 // 允许在"链条运行中"跳过的层（需要稳定仓库快照）。白名单：不在里面的一律不许跳过。
 export const SKIPPABLE_WHEN_LOCKED = new Set(['delivery', 'claims']);
 
+// v4.11.0 步11：层清单版本化 —— 把 REQUIRED_LAYERS 包裹为一份可被其它工具（verify-iteration-state.mjs）
+// 只读引用的显式清单，而不是让"层集合"只活在这份文件的运行时数组里（那样漏跑/漏登记都没有独立见证方）。
+// key 集合与顺序**由 REQUIRED_LAYERS 派生**（不手写第二份），因此天然不会与运行时清单漂移；
+// id 用现有 name 里已经在用的圈码（③④⑤…），保持与本文件顶部注释、验收文档的编号口径一致。
+const LAYER_CIRCLED_ID = {
+  gates: '③', chainRun: '④', delivery: '⑤', claims: '⑥', sediment: '⑦',
+  quotaSingleSource: '⑧', wakeOccurrence: '⑨', iterationState: '⑩', eventDrill: '⑪'
+};
+export const AUDIT_LAYERS_MANIFEST = {
+  version: '4.11.0',
+  layers: REQUIRED_LAYERS.map((l) => ({ id: LAYER_CIRCLED_ID[l.key] || l.key, key: l.key, name: l.name }))
+};
+
+// --print-manifest：把 AUDIT_LAYERS_MANIFEST 打印为 JSON 后立即退出（不跑任何层、不落任何盘）。
+// 存在的理由：其它工具（verify-iteration-state.mjs 的 J9）需要只读拿到这份清单来做"层 key 集合"比对，
+// 但**不能 `import` 本文件**——本文件顶层在通过 --selftest 短路之后是无条件真跑（spawn 9 层子进程 + 落盘
+// + process.exit），import 它等于把调用方进程也带着一起跑没了。加一个早退 flag 比重构整个文件的执行时机更安全。
+if (process.argv.includes('--print-manifest')) {
+  console.log(JSON.stringify(AUDIT_LAYERS_MANIFEST));
+  process.exit(0);
+}
+
 // 纯函数：把各层结果判成一个总判定。runs: [{key,name,code,signal,tail,skipped}]
 // chainLive：此刻是否有链条在飞（决定"跳过"是否合法——白名单 + 必须真有链锁）
 export function judgeAudits(runs, required = REQUIRED_LAYERS, opts = {}) {
@@ -144,6 +166,26 @@ function selftest() {
     console.log(`  [${pass ? 'PASS' : 'FAIL'}] [NEG] 未验证 + 真失败并存 → 报失败且仍点名未验证层 → exit=${r.exit} ${r.verdict}`);
   }
   t('[NEG] 链条在飞，但跳过了**不可跳过**的 ④ → 非法跳过', skip('chainRun'), 3, { chainLive: true });
+
+  // v4.11.0 步11：AUDIT_LAYERS_MANIFEST 与 REQUIRED_LAYERS 的 key 集合/顺序必须完全一致
+  // （MANIFEST 是从 REQUIRED_LAYERS 派生的，这里防的是"以后有人手改 MANIFEST 导致两者漂移"）。
+  {
+    const reqKeys = REQUIRED_LAYERS.map((l) => l.key);
+    const manKeys = AUDIT_LAYERS_MANIFEST.layers.map((l) => l.key);
+    const pass = reqKeys.length === manKeys.length && reqKeys.every((k, i) => k === manKeys[i]);
+    cases.push({ pass, label: '[POS] AUDIT_LAYERS_MANIFEST 的 key 集合与顺序 == REQUIRED_LAYERS', got: manKeys.join(','), expectExit: reqKeys.join(','), verdict: pass ? 'PASS' : 'FAIL' });
+    console.log(`  [${pass ? 'PASS' : 'FAIL'}] [POS] AUDIT_LAYERS_MANIFEST 的 key 集合与顺序 == REQUIRED_LAYERS（${manKeys.join(',')}）`);
+  }
+  {
+    // 负控：MANIFEST 若漏了一层（模拟登记漂移），--print-manifest 消费方必须能看出集合不等——
+    // 这里只证明"能检测出不相等"这个比较本身不是永真（不依赖 spawn，纯集合比较）。
+    const manKeys = AUDIT_LAYERS_MANIFEST.layers.map((l) => l.key);
+    const mutilated = manKeys.slice(0, -1); // 丢最后一层
+    const pass = !(mutilated.length === manKeys.length && mutilated.every((k, i) => k === manKeys[i]));
+    cases.push({ pass, label: '[NEG] 人为丢一层后集合比较必须判不等（证明比较非永真）', got: mutilated.length, expectExit: manKeys.length, verdict: pass ? 'PASS' : 'FAIL' });
+    console.log(`  [${pass ? 'PASS' : 'FAIL'}] [NEG] 人为丢一层后集合比较必须判不等（证明比较非永真）`);
+  }
+
   const ok = cases.filter((c) => c.pass).length;
   console.log(`\nRESULT: ${ok}/${cases.length} ${ok === cases.length ? 'PASS' : 'FAIL'}`);
   return ok === cases.length;

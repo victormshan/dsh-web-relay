@@ -34,11 +34,26 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { spawnSync } from 'node:child_process';
 
 export const REPO = 'D:\\dsh-web-relay';
+export const WORKSPACE = 'D:\\dsh relay test';
 export const EXP_DIR = 'D:\\dsh relay test\\web-relay\\experiments';
 export const SIGNAL_PATH = 'D:\\cc-tasks\\chain-needs-human.json';
 const HEALTH_URL = 'http://127.0.0.1:3080/dsh-web-relay/health-check';
+const CONTEXT_URL = 'http://127.0.0.1:3080/dsh-web-relay/context';
+const VERSIONS_URL = 'http://127.0.0.1:3080/dsh-web-relay/protocol/versions';
+const AUDIT_ALL_SCRIPT = path.join(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1').replace(/%20/g, ' ')), 'audit-all.mjs');
+const AUDIT_LATEST_JSON = path.join(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1').replace(/%20/g, ' ')), 'audit-latest.json');
+
+// v4.11.0 步12: "仅被直接执行时才响应 argv flag" 守卫（与 lib/autoiter-decl.js 同一 idiom）。
+// 背景：verify-gates.mjs 现在要 `import { resolveArtifactPath, readStepStates, REPO, EXP_DIR }`
+// 只读引用本文件——但 process.argv 是**进程级全局**，`node verify-gates.mjs --selftest` 跑起来后，
+// 本文件顶层若只判断 `process.argv.includes('--selftest')`（不问"我是不是被直接执行的那个脚本"），
+// 会在**被 import 的时刻**就把自己的 --selftest 跑一遍并 process.exit()——把调用方（verify-gates.mjs）
+// 的 --selftest 直接顶掉，输出看起来像是"verify-gates.mjs 的自检"实际全是本文件的（现场复现过一次）。
+// 下面三处（--selftest / --selftest-parsers / CLI 真跑）全部加 isDirectRun 前置，就不会再被 import 触发。
+const isDirectRun = process.argv[1] && import.meta.url === new URL(`file://${process.argv[1].replace(/\\/g, '/')}`).href;
 
 /** 停滞阈值（policy 常量，可用 --stall-ms 覆盖；**不随判定结果调整**）。
  *  取 6h 的理由：心跳对 executing 的陈旧阈值是 20min（DSH_RELAY_HEARTBEAT_STALE_MS），
@@ -236,8 +251,219 @@ export function judgeIterationState(inp) {
   return { exit: anyFail ? 1 : anyInstr ? 3 : anyUnver ? 4 : 0, findings, info, interrupted: interrupted.map((s) => s.exprId) };
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// v4.11.0 步10：J7/J8（协议版本口径自洽）+ J9（审计层清单一致）+ J10（Step artifacts 存在性）
+//
+// 背景：V1 把协议版本元数据收敛到 lib/index.js 的 PROTOCOL_VERSIONS_META，随 /context 与
+// /protocol/versions 下发，client.js 已改为数据驱动渲染（见 lib/client.js 注释 ccfeat-20260922-protoversion）。
+// 但"收敛完了"和"收敛的结果自洽"是两件事——四处（元数据/两个端点/前端渲染）谁都可能单独漂移，
+// 且没有机制持续盯着。J7/J8 补的正是这道持续性断言，而不是一次性人工核对。
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** 从 lib/index.js 源码解析 PROTOCOL_VERSIONS_META 的 {version, contentKey} 列表。
+ *  源码级解析（不 import lib/index.js）：version 字段既可能是字面量 'vX.Y'，也可能是具名常量
+ *  （如 WEB_RELAY_PROTOCOL_VERSION_V16）——先建常量表，再解引用；两种写法都支持，防止未来
+ *  重构成字面量或常量任一种都误判"解析失败"。解析不到 → null（工具错误，交给调用方判 3）。 */
+export function extractMetaVersions(indexSrc) {
+  const src = String(indexSrc || '');
+  const constMap = new Map();
+  for (const m of src.matchAll(/export const (WEB_RELAY_PROTOCOL_VERSION(?:_V\d+)?)\s*=\s*'([^']+)'/g)) {
+    constMap.set(m[1], m[2]);
+  }
+  const blockMatch = src.match(/PROTOCOL_VERSIONS_META\s*=\s*\[([\s\S]*?)\n\]/);
+  if (!blockMatch) return null;
+  const entries = [];
+  const entryRe = /\{\s*version:\s*([A-Za-z_][A-Za-z0-9_]*|'[^']+')[\s\S]*?contentKey:\s*'([^']+)'/g;
+  let m;
+  while ((m = entryRe.exec(blockMatch[1]))) {
+    const raw = m[1];
+    const version = raw.startsWith("'") ? raw.slice(1, -1) : (constMap.get(raw) || null);
+    if (version) entries.push({ version, contentKey: m[2] });
+  }
+  return entries.length ? entries : null;
+}
+
+/** client.js 是否具备"数据驱动渲染"痕迹：对 protocolVersions 做 .map 渲染，且按 contentKey 查表取正文
+ *  （而不是逐版本 if/三元链手写）。浏览器 bundle 无法直接执行，只能做源码级痕迹断言。 */
+export function clientRendersFromMeta(clientSrc) {
+  const src = String(clientSrc || '');
+  // 口径修正（2026-09-22 主 agent，实测客户端实现后校准）：
+  // 原判据要求 `protocolVersions` 与 `.map(` 在 300 字符窗口内相邻——但真实实现是
+  //   const meta = (Array.isArray(protocolVersions) …) ? protocolVersions : PROTOCOL_VERSIONS_FALLBACK
+  //   … meta.map((m) => h('option', …))
+  // 即先把 protocolVersions 赋给局部变量再 map，窗口远大于 300 → 误 FAIL（断言过窄也是一种错误）。
+  // 新口径：① 必须出现 protocolVersions（元数据来源）+ 至少一处 .map( 渲染；
+  //          ② 且必须按 contentKey 查表取正文（而不是逐版本 if/三元链）。
+  const readsMeta = /protocolVersions/.test(src);
+  const mapsSomething = /\.map\(/.test(src);
+  const usesContentKey = /contentKey/.test(src);
+  return readsMeta && mapsSomething && usesContentKey;
+}
+
+/** J8 判据①：client.js 不得出现整串硬编码版本下拉列表（旧世界机器签名：连续字面量 'v1.5'…'v1.9'，
+ *  或大量逐版本 `protocolVersion === 'vX.Y'` 分支）。判据口径与 probes/protocol-version-grounding-accept.mjs
+ *  的 legacyOptionList/branchCount 一致（同一缺陷家族，不另开一套标准）。 */
+export function clientHasHardcodedVersionList(clientSrc) {
+  const src = String(clientSrc || '');
+  const legacyOptionList = /'v1\.5'[\s\S]{0,400}'v1\.9'/.test(src);
+  const branchCount = (src.match(/protocolVersion\s*===\s*'v\d\.\d'/g) || []).length;
+  return legacyOptionList || branchCount > 2;
+}
+
+/** J8 判据②：client.js 不得有 localStorage 版本白名单（"未知值静默回落固定版本"的源头——本次修复前
+ *  localStorage 读出的值只认 v1.6-v1.9，其余静默回落 v1.5，新增版本必然被吞）。 */
+export function clientHasLocalStorageWhitelist(clientSrc) {
+  const src = String(clientSrc || '');
+  return /localStorage[\s\S]{0,300}===\s*'v1\.6'[\s\S]{0,150}'v1\.9'/.test(src) || /===\s*'v1\.6'[\s\S]{0,120}'v1\.9'/.test(src);
+}
+
+/** J7+J8：四处版本口径一致 + client.js 不硬编码。纯函数，输入均为已读取的字符串/已解析的 JSON，
+ *  不在函数内部做任何 IO（IO 由 CLI 段落负责，selftest 可直接注入夹具字符串/对象）。
+ *  宿主不可达（ctx===null）时 J7 落"未验证"（4），不得伪装成 PASS——与本文件既有语义一致。 */
+export function judgeVersionGrounding({ indexSrc, clientSrc, ctx, versionsResp, hostReachable }) {
+  const findings = [];
+  const add = (id, exit, detail) => findings.push({ id, verdict: exit === 0 ? 'PASS' : exit === 1 ? 'FAIL' : exit === 3 ? 'INSTRUMENT-ERROR' : 'UNVERIFIED', exit, detail });
+
+  const metaEntries = extractMetaVersions(indexSrc);
+  const dataDriven = clientRendersFromMeta(clientSrc);
+  if (!metaEntries) {
+    add('J7-版本口径一致', 3, '无法从 lib/index.js 源码解析出 PROTOCOL_VERSIONS_META（工具错误，不是判定失败——多半是源码文件读不到或格式变了）');
+  } else if (!hostReachable) {
+    add('J7-版本口径一致', 4, `宿主不可达：无法比对 /context.protocolVersions 与 /protocol/versions（source 侧已解析出 META ${metaEntries.length} 项，client.js 数据驱动渲染痕迹=${dataDriven}）→ 按既有语义标记未验证，不得伪装成 PASS`);
+  } else {
+    const metaVersions = metaEntries.map((e) => e.version);
+    const ctxVersions = Array.isArray(ctx && ctx.protocolVersions) ? ctx.protocolVersions.map((v) => v && v.version) : null;
+    const pvVersions = Array.isArray(versionsResp && versionsResp.versions) ? versionsResp.versions.map((v) => v && v.version) : null;
+    const setEq = (a, b) => Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((v) => b.includes(v));
+    const problems = [];
+    if (!setEq(metaVersions, ctxVersions)) problems.push(`META(${metaVersions.join(',')}) ≠ /context.protocolVersions(${(ctxVersions || []).join(',') || '缺失'})`);
+    if (!setEq(metaVersions, pvVersions)) problems.push(`META(${metaVersions.join(',')}) ≠ /protocol/versions(${(pvVersions || []).join(',') || '缺失'})`);
+    if (!dataDriven) problems.push('client.js 未见"数据驱动渲染"痕迹（protocolVersions.map + contentKey 查表），无法保证其可渲染集合与后端一致');
+    const missingBody = ctx ? metaEntries.filter((e) => !(ctx[e.contentKey] && String(ctx[e.contentKey]).trim())) : metaEntries;
+    if (missingBody.length) problems.push(`以下 contentKey 在 /context 无非空正文：${missingBody.map((e) => `${e.version}→${e.contentKey}`).join('、')}`);
+    add('J7-版本口径一致', problems.length ? 1 : 0, problems.length ? problems.join('；') : `四处版本口径一致（共 ${metaVersions.length} 版：${metaVersions.join(',')}），且每个 contentKey 在 /context 均有非空正文`);
+  }
+
+  const hardcoded = clientHasHardcodedVersionList(clientSrc);
+  const whitelist = clientHasLocalStorageWhitelist(clientSrc);
+  add('J8-无硬编码版本清单', (hardcoded || whitelist) ? 1 : 0,
+    (hardcoded || whitelist)
+      ? `client.js 出现${hardcoded ? '整串硬编码版本列表' : ''}${hardcoded && whitelist ? '、' : ''}${whitelist ? 'localStorage 版本白名单' : ''}（旧世界机器签名，静默回落固定版本）`
+      : 'client.js 未见整串硬编码版本列表，也未见 localStorage 版本白名单');
+
+  const anyFail = findings.some((f) => f.exit === 1);
+  const anyInstr = findings.some((f) => f.exit === 3);
+  const anyUnver = findings.some((f) => f.exit === 4);
+  return { exit: anyFail ? 1 : anyInstr ? 3 : anyUnver ? 4 : 0, findings };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// v4.11.0 步11：J9 —— 最近一次 audit-all 结果的层 key 集合必须 == AUDIT_LAYERS_MANIFEST 的 key 集合
+// 缺层（漏跑）与多层（结果里出现但清单未登记）都必须 FAIL——两侧都是"清单与事实不同步"。
+// ═══════════════════════════════════════════════════════════════════════════
+export function judgeAuditLayerManifest({ manifestKeys, lastRunKeys, readable }) {
+  const add = (id, exit, detail) => ({ id, verdict: exit === 0 ? 'PASS' : exit === 1 ? 'FAIL' : exit === 3 ? 'INSTRUMENT-ERROR' : 'UNVERIFIED', exit, detail });
+  if (!readable || !Array.isArray(manifestKeys)) {
+    return { exit: 4, findings: [add('J9-审计层清单一致', 4, '读不到 AUDIT_LAYERS_MANIFEST（audit-all.mjs --print-manifest 不可用）→ 未验证，不得伪装成 PASS')] };
+  }
+  if (!Array.isArray(lastRunKeys)) {
+    return { exit: 4, findings: [add('J9-审计层清单一致', 4, '读不到最近一次 audit-all --json 结果（audit-latest.json 缺失或不可解析）→ 未验证，不得伪装成 PASS')] };
+  }
+  const mset = new Set(manifestKeys);
+  const rset = new Set(lastRunKeys);
+  const missing = manifestKeys.filter((k) => !rset.has(k));
+  const extra = lastRunKeys.filter((k) => !mset.has(k));
+  if (missing.length || extra.length) {
+    const parts = [];
+    if (missing.length) parts.push(`缺层（清单声明但最近一次结果里没跑）：${missing.join('、')}`);
+    if (extra.length) parts.push(`多层（结果里出现但清单未登记）：${extra.join('、')}`);
+    return { exit: 1, findings: [add('J9-审计层清单一致', 1, parts.join('；'))] };
+  }
+  return { exit: 0, findings: [add('J9-审计层清单一致', 0, `层 key 集合一致（共 ${manifestKeys.length} 层）`)] };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// v4.11.0 步12：resolveArtifactPath + J10 —— Step List artifacts 存在性判据
+// 与子任务①（shadow-gate resolveRepoPath）同一族缺陷：证据路径锚点错误——把 repoRoot 解析成
+// 宿主工作区而不是插件仓库根，会让本该存在的产物"看起来缺失"。verify-gates.mjs 复用同一份实现
+// （从本文件 import），不得各写一份自己的路径解析（两处实现迟早漂移）。
+// ═══════════════════════════════════════════════════════════════════════════
+/** 多根解析（口径修正 2026-09-22 主 agent，实测暴露）：
+ *  产物分布在两个仓库——插件仓库（lib/…、test/…、probes/…）与主 agent 工作区（verify-*.mjs、audit-all.mjs、cc-specs/…）。
+ *  Step List 的 artifacts 既有仓库相对也有工作区相对，用单根必误判其一。
+ *  故按**候选根顺序**逐个尝试（仓库根优先——原始缺陷"仓库相对路径被当成工作区相对"的负控仍然成立：
+ *  单传错误根时同一相对路径仍解析不到）。任一候选命中即返回命中的绝对路径。 */
+export function resolveArtifactPathMulti(roots, artifactPath) {
+  const list = (Array.isArray(roots) ? roots : [roots]).filter((r) => typeof r === 'string' && r);
+  if (typeof artifactPath !== 'string' || !artifactPath.trim()) return null;
+  const p = artifactPath.trim();
+  if (path.isAbsolute(p)) { try { return fs.existsSync(p) ? p : null; } catch { return null; } }
+  for (const r of list) {
+    const abs = path.join(r, p);
+    try { if (fs.existsSync(abs)) return abs; } catch { /* 试下一个 */ }
+  }
+  return null;
+}
+
+export function resolveArtifactPath(repoRoot, artifactPath) {
+  if (typeof artifactPath !== 'string' || !artifactPath.trim()) return null;
+  const p = artifactPath.trim();
+  const abs = path.isAbsolute(p) ? p : (repoRoot ? path.join(repoRoot, p) : null);
+  if (!abs) return null;
+  try { return fs.existsSync(abs) ? abs : null; } catch { return null; }
+}
+
+/** 路径型 artifacts 判定（口径修正 2026-09-22 主 agent，实测暴露）：
+ *  历史 expr 的 artifacts 混杂三类内容——① 仓库/工作区相对路径；② 句子型描述（如
+ *  "验证：真实会话 … 全量解析 604 assistant/message"）；③ 带说明后缀的路径（"lib/index.js（后端费用解析 API）"）。
+ *  把 ②③ 当路径判存在性必然全 FAIL（实测 100+ 条历史 expr 被一次性判失败）——那是**把历史包袱当成本周期违约**，
+ *  与"证据必须属于该对象"（runbook §8.2）同一条纪律。故 J10 只判**在办/未终态** expr 的**可判定路径**：
+ *  · 只取 status 非终态（非 done/finalized）的 expr；
+ *  · 只取形态上像路径的项（含 / 或 \ 或带 .后缀，且不含空白——句子型描述一律跳过）；
+ *  · 带"（说明）"后缀的先剥掉括号再判。
+ *  被跳过的项作为 info 计数输出，不静默丢弃。 */
+export function artifactPathLike(raw) {
+  if (typeof raw !== 'string') return null;
+  let p = raw.trim();
+  if (!p) return null;
+  p = p.replace(/（[^）]*）\s*$/, '').replace(/\([^)]*\)\s*$/, '').trim();   // 剥说明后缀
+  if (/^\[(NEW|MOD|DEL)\]\s*/i.test(p)) p = p.replace(/^\[(NEW|MOD|DEL)\]\s*/i, '').trim();
+  if (!p || /\s/.test(p)) return null;                                      // 含空白 → 句子型，跳过
+  if (!/[\\/]/.test(p) && !/\.[A-Za-z0-9]{1,6}$/.test(p)) return null;      // 既无分隔符也无扩展名 → 跳过
+  if (/^[A-Za-z]:[\\/]/.test(p)) return p;                                  // 绝对路径
+  if (/^[a-z]+:\/\//i.test(p)) return null;                                 // URL 不算产物路径
+  return p;
+}
+
+export function judgeArtifactsExistence({ states, repoRoot, workspaceRoot }) {
+  const missing = [];
+  let checked = 0;
+  let skippedLegacy = 0;
+  let skippedTerminal = 0;
+  const roots = [repoRoot, workspaceRoot].filter((r) => typeof r === 'string' && r);
+  for (const st of states || []) {
+    if (!st || !Array.isArray(st.steps)) continue;
+    const terminal = st.finalized === true || st.status === 'done' || st.status === 'paused' || st.status === 'stopped';
+    for (const step of st.steps) {
+      const arts = Array.isArray(step && step.artifacts) ? step.artifacts : [];
+      for (const a of arts) {
+        const raw = typeof a === 'string' ? a : (a && a.path);
+        const p = artifactPathLike(raw);
+        if (!p) { skippedLegacy++; continue; }
+        if (terminal) { skippedTerminal++; continue; }   // 历史终态 expr 的路径不判（早已交付/归档）
+        checked++;
+        if (!resolveArtifactPathMulti(roots, p)) missing.push(`${st.exprId || '?'}/${step.id || '?'}: ${p}`);
+      }
+    }
+  }
+  const add = (id, exit, detail) => ({ id, verdict: exit === 0 ? 'PASS' : 'FAIL', exit, detail });
+  const note = `（在办路径型 ${checked} 个；候选根 ${roots.join(' + ')}；跳过非路径描述 ${skippedLegacy} 个、终态历史 ${skippedTerminal} 个）`;
+  if (missing.length) return { exit: 1, findings: [add('J10-artifacts存在性', 1, `在办步骤的以下 artifacts 用 resolveArtifactPathMulti(${roots.join(' + ')}, ...) 均解析不到（路径锚点错误或文件确实缺失）：${missing.join('；')}${note}`)] };
+  return { exit: 0, findings: [add('J10-artifacts存在性', 0, checked ? `在办步骤 ${checked} 个路径型 artifacts 均可在候选根下解析到${note}` : `本周期无"在办 + 路径型"artifacts → 无可判定对象（不算失败）${note}`)] };
+}
+
 // ---------------- 判定自检 ----------------
-if (process.argv.includes('--selftest')) {
+if (isDirectRun && process.argv.includes('--selftest')) {
   const now = Date.parse('2026-09-20T12:00:00.000Z');
   const mk = (o) => ({ exprId: 'expr-t', status: 'executing', bootId: 'old-boot', activeSteps: ['s1'], steps: [{ id: 's1', status: 'executing' }], updatedAt: '2026-09-20T11:00:00.000Z', autoDecision: false, ...o });
   // 注意：自检直接注入 states 与已判定的"权威范围"结果，故用真实模块的 isExprInterrupted 语义构造夹具。
@@ -274,13 +500,107 @@ if (process.argv.includes('--selftest')) {
       { ...base, states: [mk({ status: 'done', autoDecision: true, iterations: 3, currentIteration: 1, activeSteps: [], steps: [{ id: 's1', status: 'approved' }], updatedAt: '2026-09-03T02:16:31.310Z' })] }, 0],
   ];
   let bad = 0;
+  let total = cases.length;
   for (const [name, inp, expect] of cases) {
     const r = judgeIterationState(inp);
     const ok = r.exit === expect;
     if (!ok) bad++;
     console.log(`  [${ok ? 'PASS' : 'FAIL'}] ${name}${ok ? '' : `（期望 exit=${expect}，实际 ${r.exit}：${r.findings.map((f) => f.detail).join('；')}）`}`);
   }
-  console.log(`\nRESULT: ${cases.length - bad}/${cases.length} ${bad ? 'FAIL' : 'PASS'}`);
+
+  // ---- v4.11.0 步10：J7/J8 协议版本口径自洽（自检两侧，防断言永真）----
+  const goodIndexSrc = `
+export const WEB_RELAY_PROTOCOL_VERSION = 'v1.5'
+export const WEB_RELAY_PROTOCOL_VERSION_V16 = 'v1.6'
+export const PROTOCOL_VERSIONS_META = [
+  { version: WEB_RELAY_PROTOCOL_VERSION, concurrent: false, isConcurrent: false, contentKey: 'protocolV15', label: 'v1.5' },
+  { version: WEB_RELAY_PROTOCOL_VERSION_V16, concurrent: true, isConcurrent: true, contentKey: 'protocolV16', label: 'v1.6' }
+]
+`;
+  const goodClientSrc = `
+const rendered = protocolVersions.map((v) => ({ key: v.contentKey, label: v.label }))
+const entry = data[activeMeta.contentKey]
+`;
+  const goodCtx = { protocolVersions: [{ version: 'v1.5', contentKey: 'protocolV15' }, { version: 'v1.6', contentKey: 'protocolV16' }], protocolV15: '正文 A', protocolV16: '正文 B' };
+  const goodVersionsResp = { versions: [{ version: 'v1.5' }, { version: 'v1.6' }] };
+  const j78Cases = [
+    ['[POS] 四处口径一致 + 数据驱动渲染 + contentKey 均有正文 → J7/J8 全放行', { indexSrc: goodIndexSrc, clientSrc: goodClientSrc, ctx: goodCtx, versionsResp: goodVersionsResp, hostReachable: true }, 0],
+    ['[NEG] 宿主不可达 → J7 未验证(4)，不得伪装成 PASS', { indexSrc: goodIndexSrc, clientSrc: goodClientSrc, ctx: null, versionsResp: null, hostReachable: false }, 4],
+    ['[NEG] 源码解析不到 META（工具错误）', { indexSrc: '// no meta here', clientSrc: goodClientSrc, ctx: goodCtx, versionsResp: goodVersionsResp, hostReachable: true }, 3],
+    ['[NEG] /context.protocolVersions 缺一版（口径不一致）→ J7 失败',
+      { indexSrc: goodIndexSrc, clientSrc: goodClientSrc, ctx: { protocolVersions: [{ version: 'v1.5', contentKey: 'protocolV15' }], protocolV15: 'x' }, versionsResp: goodVersionsResp, hostReachable: true }, 1],
+    ['[NEG] contentKey 在 /context 里正文为空 → J7 失败',
+      { indexSrc: goodIndexSrc, clientSrc: goodClientSrc, ctx: { protocolVersions: goodCtx.protocolVersions, protocolV15: '', protocolV16: '正文 B' }, versionsResp: goodVersionsResp, hostReachable: true }, 1],
+    ['[NEG] 注入整串硬编码版本列表（旧世界机器签名）→ J8 失败',
+      { indexSrc: goodIndexSrc, clientSrc: goodClientSrc + `\nconst LEGACY = ['v1.5','v1.6','v1.7','v1.8','v1.9']`, ctx: goodCtx, versionsResp: goodVersionsResp, hostReachable: true }, 1],
+    ['[NEG] 注入 localStorage 版本白名单 → J8 失败',
+      { indexSrc: goodIndexSrc, clientSrc: goodClientSrc + `\nif (localStorage.getItem('x') === 'v1.6' || stored === 'v1.9') {}`, ctx: goodCtx, versionsResp: goodVersionsResp, hostReachable: true }, 1],
+    ['[NEG] client.js 无数据驱动渲染痕迹 → J7 失败（无法保证可渲染集合一致）',
+      { indexSrc: goodIndexSrc, clientSrc: '// no map, no contentKey', ctx: goodCtx, versionsResp: goodVersionsResp, hostReachable: true }, 1],
+  ];
+  for (const [name, inp, expect] of j78Cases) {
+    total++;
+    const r = judgeVersionGrounding(inp);
+    const ok = r.exit === expect;
+    if (!ok) bad++;
+    console.log(`  [${ok ? 'PASS' : 'FAIL'}] ${name}${ok ? '' : `（期望 exit=${expect}，实际 ${r.exit}：${r.findings.map((f) => f.detail).join('；')}）`}`);
+  }
+
+  // ---- v4.11.0 步11：J9 审计层清单一致（自检两侧）----
+  const j9Cases = [
+    ['[POS] 层 key 集合完全一致 → 放行', { manifestKeys: ['a', 'b', 'c'], lastRunKeys: ['a', 'b', 'c'], readable: true }, 0],
+    ['[NEG] 缺层（清单里有但最近一次结果没跑）→ 失败', { manifestKeys: ['a', 'b', 'c'], lastRunKeys: ['a', 'b'], readable: true }, 1],
+    ['[NEG] 多层（结果里有但清单未登记）→ 失败', { manifestKeys: ['a', 'b'], lastRunKeys: ['a', 'b', 'c'], readable: true }, 1],
+    ['[NEG] 清单不可读（audit-all.mjs --print-manifest 不可用）→ 未验证(4)', { manifestKeys: null, lastRunKeys: ['a', 'b'], readable: false }, 4],
+    ['[NEG] 最近一次结果不可读（audit-latest.json 缺失）→ 未验证(4)', { manifestKeys: ['a', 'b'], lastRunKeys: null, readable: true }, 4],
+  ];
+  for (const [name, inp, expect] of j9Cases) {
+    total++;
+    const r = judgeAuditLayerManifest(inp);
+    const ok = r.exit === expect;
+    if (!ok) bad++;
+    console.log(`  [${ok ? 'PASS' : 'FAIL'}] ${name}${ok ? '' : `（期望 exit=${expect}，实际 ${r.exit}）`}`);
+  }
+
+  // ---- v4.11.0 步12：resolveArtifactPath + J10 artifacts 存在性（含"路径错位"负控）----
+  {
+    const os = await import('node:os');
+    const realRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'artifact-repo-'));
+    const wrongBase = fs.mkdtempSync(path.join(os.tmpdir(), 'artifact-wrongbase-')); // 冒充"宿主工作区"
+    fs.mkdirSync(path.join(realRepo, 'lib'), { recursive: true });
+    fs.writeFileSync(path.join(realRepo, 'lib', 'foo.js'), '// x', 'utf8');
+    const absFile = path.join(realRepo, 'lib', 'foo.js');
+    const rpCases = [
+      ['[POS] 相对路径按 repoRoot 正确解析到存在文件', resolveArtifactPath(realRepo, 'lib/foo.js') === absFile],
+      ['[POS] 绝对路径原样返回（文件存在）', resolveArtifactPath('/whatever/不会被用到', absFile) === absFile],
+      ['[NEG] 解析不到（相对路径在 repoRoot 下不存在）→ null', resolveArtifactPath(realRepo, 'lib/not-exist.js') === null],
+      // ★ 核心负控：与子任务①同型——把 repoRoot 错传成"宿主工作区"（这里用 wrongBase 冒充），
+      //   同一个相对 artifact 路径在错误的 base 下必须解析不到（null），证明"路径锚点错位"确实会被抓到。
+      ['[NEG] 路径错位（repoRoot 误传成宿主工作区）→ 同一相对路径解析不到', resolveArtifactPath(wrongBase, 'lib/foo.js') === null],
+    ];
+    for (const [name, cond] of rpCases) {
+      total++;
+      if (!cond) bad++;
+      console.log(`  [${cond ? 'PASS' : 'FAIL'}] ${name}`);
+    }
+
+    const statesWithArtifact = [{ exprId: 'expr-art', steps: [{ id: 's1', artifacts: ['lib/foo.js'] }] }];
+    const j10Cases = [
+      ['[POS] repoRoot 正确 → artifacts 均可解析，放行', judgeArtifactsExistence({ states: statesWithArtifact, repoRoot: realRepo }).exit, 0],
+      ['[NEG] repoRoot 错位（同一 artifact 路径按错误 base 解析）→ 失败', judgeArtifactsExistence({ states: statesWithArtifact, repoRoot: wrongBase }).exit, 1],
+      ['[POS] 无步骤声明 artifacts → 无可判定对象，放行（不是假通过）', judgeArtifactsExistence({ states: [{ exprId: 'e', steps: [{ id: 's1' }] }], repoRoot: realRepo }).exit, 0],
+    ];
+    for (const [name, got, expect] of j10Cases) {
+      total++;
+      const ok = got === expect;
+      if (!ok) bad++;
+      console.log(`  [${ok ? 'PASS' : 'FAIL'}] ${name}${ok ? '' : `（期望 ${expect}，实际 ${got}）`}`);
+    }
+    fs.rmSync(realRepo, { recursive: true, force: true });
+    fs.rmSync(wrongBase, { recursive: true, force: true });
+  }
+
+  console.log(`\nRESULT: ${total - bad}/${total} ${bad ? 'FAIL' : 'PASS'}`);
   process.exit(bad ? 1 : 0);
 }
 
@@ -343,6 +663,15 @@ if (process.argv.includes('--selftest-parsers')) {
 }
 
 // ---------------- CLI ----------------
+// v4.11.0 步12: 加"仅被直接执行时才跑"守卫（与 lib/autoiter-decl.js 同一idiom）。
+// 背景：verify-gates.mjs 现在要 `import { resolveArtifactPath, readStepStates, REPO, EXP_DIR }`
+// 只读引用本文件的纯函数/常量——若没有这道守卫，import 会把下面这段真跑一遍（拉 HTTP、
+// spawn audit-all.mjs 子进程、最后还 process.exit()，把导入方的进程也一并带退出），
+// 而 --selftest/--selftest-parsers 分支已经各自 process.exit()，正常直跑不受影响。
+// 修复（2026-09-22 主 agent）：此处原先又声明了一次 `const isDirectRun`，与第 55 行的同名声明冲突
+// （SyntaxError: Identifier 'isDirectRun' has already been declared）——该文件因 cc 任务超时被中断在
+// 半成品状态。顶层已有该常量，这里不再重复声明。
+if (isDirectRun) {
 const argv = process.argv.slice(2);
 const argOf = (n, d) => { const i = argv.indexOf(n); return i >= 0 && argv[i + 1] ? argv[i + 1] : d; };
 const stallMs = Number(argOf('--stall-ms', String(STALL_MS_DEFAULT)));
@@ -354,15 +683,44 @@ const live = await (async () => {
 const states = readStepStates();
 const r = judgeIterationState({ states, liveBootId: live, signals: readSignals(), nowMs: Date.now(), stallMs });
 
+// v4.11.0 步10：J7/J8——读源码 + 拉 /context 与 /protocol/versions（宿主不可达 → hostReachable=false，J7 按既有语义未验证）
+let indexSrc = '', clientSrc = '';
+try { indexSrc = fs.readFileSync(path.join(REPO, 'lib', 'index.js'), 'utf8'); } catch { /* 工具错误由 judgeVersionGrounding 内部判定 */ }
+try { clientSrc = fs.readFileSync(path.join(REPO, 'lib', 'client.js'), 'utf8'); } catch { /* 同上 */ }
+let ctx = null, versionsResp = null;
+try { const cr = await fetch(CONTEXT_URL, { signal: AbortSignal.timeout(8000) }); ctx = await cr.json(); } catch { ctx = null; }
+try { const vr = await fetch(VERSIONS_URL, { signal: AbortSignal.timeout(8000) }); versionsResp = await vr.json(); } catch { versionsResp = null; }
+const rv = judgeVersionGrounding({ indexSrc, clientSrc, ctx, versionsResp, hostReachable: !!ctx });
+
+// v4.11.0 步11：J9——最近一次 audit-all 结果的层 key 集合 == AUDIT_LAYERS_MANIFEST 的 key 集合
+let manifestKeys = null;
+try {
+  const mp = spawnSync(process.execPath, [AUDIT_ALL_SCRIPT, '--print-manifest'], { encoding: 'utf8', timeout: 15000 });
+  if (mp.status === 0 && mp.stdout) manifestKeys = (JSON.parse(mp.stdout).layers || []).map((l) => l.key);
+} catch { manifestKeys = null; }
+let lastRunKeys = null;
+try { lastRunKeys = (JSON.parse(fs.readFileSync(AUDIT_LATEST_JSON, 'utf8')).runs || []).map((x) => x.key); } catch { lastRunKeys = null; }
+const r9 = judgeAuditLayerManifest({ manifestKeys, lastRunKeys, readable: Array.isArray(manifestKeys) });
+
+// v4.11.0 步12：J10——Step List artifacts 存在性（repoRoot = 插件仓库根 REPO，不是宿主工作区）
+const r10 = judgeArtifactsExistence({ states, repoRoot: REPO, workspaceRoot: WORKSPACE });
+
+const allFindings = [...r.findings, ...rv.findings, ...r9.findings, ...r10.findings];
+const overallExit = [r.exit, rv.exit, r9.exit, r10.exit].includes(1) ? 1
+  : [r.exit, rv.exit, r9.exit, r10.exit].includes(3) ? 3
+  : [r.exit, rv.exit, r9.exit, r10.exit].includes(4) ? 4
+  : 0;
+
 console.log('=== ⑩ 迭代状态机审计（三方协议 step list）===');
 console.log(`  活 bootId = ${live || '(读不到)'} ｜ steps.json ${states.length} 个 ｜ 权威实现已导入 = ${RESUME_MODULE_LOADED} ｜ 身份模块 = ${TASKREF_MODULE_LOADED}`);
 console.log(`  跨 boot 中断中的 expr = ${(r.interrupted || []).length ? r.interrupted.join('、') : '(无)'}`);
-for (const f of r.findings) console.log(`  [${f.verdict}] ${f.id} — ${f.detail}`);
+for (const f of allFindings) console.log(`  [${f.verdict}] ${f.id} — ${f.detail}`);
 if (r.info.length) console.log(`  ℹ 信息项（不判失败）：${r.info.length} 条${r.info.length <= 3 ? ' — ' + r.info.join('；') : ''}`);
-const label = r.exit === 0 ? 'PASS（状态机自洽且无静默停摆）' : r.exit === 1 ? 'FAIL（迭代状态机存在问题）' : r.exit === 3 ? 'INSTRUMENT-ERROR（工具错误，不是判定失败）' : 'UNVERIFIED（证据不足，不得读成通过）';
+const label = overallExit === 0 ? 'PASS（状态机自洽、版本口径自洽、审计层清单一致、artifacts 可解析，且无静默停摆）' : overallExit === 1 ? 'FAIL（存在判定不通过的判据）' : overallExit === 3 ? 'INSTRUMENT-ERROR（工具错误，不是判定失败）' : 'UNVERIFIED（证据不足，不得读成通过）';
 console.log(`\n  RESULT: ${label}`);
 if (argv.includes('--json')) {
   const out = path.join(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1').replace(/%20/g, ' ')), 'iteration-state.json');
-  fs.writeFileSync(out, JSON.stringify({ at: new Date().toISOString(), exit: r.exit, liveBootId: live, findings: r.findings, info: r.info }, null, 2), 'utf8');
+  fs.writeFileSync(out, JSON.stringify({ at: new Date().toISOString(), exit: overallExit, liveBootId: live, findings: allFindings, info: r.info }, null, 2), 'utf8');
 }
-process.exit(r.exit);
+process.exit(overallExit);
+}

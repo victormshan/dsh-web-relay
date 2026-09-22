@@ -18,6 +18,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { chainLive } from './chain-lock.mjs';
+// v4.11.0 步12: artifacts 存在性判据统一实现——从 verify-iteration-state.mjs 只读引用，不在本文件
+// 另写一份路径解析（两处实现迟早漂移；子任务①的 shadow-gate 缺陷正是"同一件事两处判、锚点还不一样"的教训）。
+import { resolveArtifactPath, resolveArtifactPathMulti, artifactPathLike, readStepStates, REPO, EXP_DIR, WORKSPACE } from './verify-iteration-state.mjs';
 
 // ⚠ 注意：不能用 new URL(import.meta.url).pathname —— 它给出 URL 编码路径（D:\dsh%20relay%20test），
 // 会让所有子进程的 cwd 失效、并把 ENOENT 伪装成"门禁失败"。本文件初版正是这么错的（被自己的输出暴露）。
@@ -140,6 +143,28 @@ if (process.argv.includes('--selftest')) {
   ];
   let bad = 0;
   for (const [n, cond] of cases) { if (!cond) bad++; console.log(`  [${cond ? 'PASS' : 'FAIL'}] ${n}`); }
+
+  // v4.11.0 步12：resolveArtifactPath 的两侧自检（统一实现，从 verify-iteration-state.mjs 引用，
+  // 见文件顶部 import 处的说明）。核心负控与子任务①（shadow-gate resolveRepoPath）同型：
+  // repoRoot 传错（误传成宿主工作区）时，同一个相对 artifact 路径必须解析不到。
+  {
+    const tmpRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'gates-artifact-repo-'));
+    const tmpWrongBase = fs.mkdtempSync(path.join(os.tmpdir(), 'gates-artifact-wrongbase-'));
+    fs.mkdirSync(path.join(tmpRepo, 'lib'), { recursive: true });
+    fs.writeFileSync(path.join(tmpRepo, 'lib', 'foo.js'), '// x', 'utf8');
+    const abs = path.join(tmpRepo, 'lib', 'foo.js');
+    const artCases = [
+      ['[POS] 相对路径按 repoRoot 正确解析到存在文件', resolveArtifactPath(tmpRepo, 'lib/foo.js') === abs],
+      ['[POS] 绝对路径原样返回', resolveArtifactPath('/不会被用到', abs) === abs],
+      ['[NEG] repoRoot 下确实不存在 → null', resolveArtifactPath(tmpRepo, 'lib/nope.js') === null],
+      ['[NEG] 路径错位（repoRoot 误传成"宿主工作区"）→ 同一相对路径解析不到', resolveArtifactPath(tmpWrongBase, 'lib/foo.js') === null],
+    ];
+    for (const [n, cond] of artCases) { if (!cond) bad++; console.log(`  [${cond ? 'PASS' : 'FAIL'}] ${n}`); }
+    fs.rmSync(tmpRepo, { recursive: true, force: true });
+    fs.rmSync(tmpWrongBase, { recursive: true, force: true });
+    cases.push(...artCases.map(([n, cond]) => [n, cond]));
+  }
+
   console.log(`\nRESULT: ${cases.length - bad}/${cases.length} ${bad ? 'FAIL' : 'PASS'}`);
   process.exit(bad ? 1 : 0);
 }
@@ -194,6 +219,36 @@ for (const g of GATES) {
   const referenced = reg.includes(`'${g.script}'`) || reg.includes(`'${base}'`);
   if (!referenced) console.log(`  [WARN] ${g.name}（${g.script}）未被 ${REGRESSION} 引用`);
   else console.log(`  [PASS] ${g.name} 已被回归套件引用`);
+}
+
+console.log('\n=== 规则 D：Step List artifacts 路径锚点（多候选根 + 只在办 + 路径型）===');
+// v4.11.0 步12：真判据——用统一实现对**真实** Step List 状态里声明的 artifacts 做存在性判定。
+// 口径与 ⑩ 的 J10 完全一致（同一实现、同一作用域），避免两处判据漂移：
+//   · 候选根 = 插件仓库根 REPO + 宿主工作区 WORKSPACE（产物分布两处：lib/test/probes 与 verify-*.mjs 等）；
+//   · 只判**在办**（非终态）expr —— 历史终态 expr 的路径早已交付/归档，判它们等于把历史包袱当本周期违约；
+//   · 只判**路径型**项 —— 历史里混有句子型描述（"验证：…"）与带说明后缀的路径，按路径判必然误 FAIL。
+{
+  const realStates = readStepStates(EXP_DIR);
+  let checked = 0;
+  let skippedLegacy = 0;
+  let skippedTerminal = 0;
+  const missing = [];
+  for (const st of realStates) {
+    const terminal = st.finalized === true || st.status === 'done' || st.status === 'paused' || st.status === 'stopped';
+    for (const step of Array.isArray(st.steps) ? st.steps : []) {
+      const arts = Array.isArray(step && step.artifacts) ? step.artifacts : [];
+      for (const a of arts) {
+        const raw = typeof a === 'string' ? a : (a && a.path);
+        const p = artifactPathLike(raw);
+        if (!p) { skippedLegacy++; continue; }
+        if (terminal) { skippedTerminal++; continue; }
+        checked++;
+        if (!resolveArtifactPathMulti([REPO, WORKSPACE], p)) missing.push(`${st.exprId || st.file}/${step.id || '?'}: ${p}`);
+      }
+    }
+  }
+  ok('Step List artifacts 存在性（候选根 = 仓库 + 工作区，仅在办路径型）', missing.length === 0,
+    missing.length ? `解析不到：${missing.join('；')}` : `已核验 ${checked} 个在办路径型 artifacts（跳过非路径描述 ${skippedLegacy}、终态历史 ${skippedTerminal}）${checked ? '' : '（本周期无在办路径型 artifacts，无可判定对象）'}`);
 }
 
 const failed = results.filter((r) => !r.ok);
