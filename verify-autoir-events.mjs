@@ -108,16 +108,18 @@ for (let i = 1; i <= 3; i++) {
   const st = readState(id1);
   const step = st.steps.find((s) => String(s.id) === 's1');
   if (step.status !== 'review') { step.status = 'review'; fs.writeFileSync(statePath(id1), JSON.stringify(st, null, 2), 'utf8'); }
-  const r = await post({ workspacePath: base, exprId: id1, stepId: 's1', action: 'reject', comment: `验证：第 ${i} 次打回`, role: 'mainagent' });
+  const r = await post({ workspacePath: base, exprId: id1, stepId: 's1', action: 'reject', comment: `验证：第 ${i} 次打回`, role: 'mainagent',
+    // v4.12.3：夹具在**写入时**就声明自己是合成的 —— 事后补标记已经太晚（插件早已唤醒过主 agent）。
+    // 插件侧守卫：只有 base 位于临时目录时才允许该标记生效（真实工作区的告警无法被伪装成夹具）。
+    synthetic: true });
   const after = readState(id1);
   rejects = after.rejectStreak || 0;
   console.log(`    第 ${i} 次 reject → HTTP ${r.status} ｜ rejectStreak=${rejects} ｜ status=${after.status}`);
   if (r.status !== 200) { console.log(`    ⚠ 响应：${JSON.stringify(r.body).slice(0, 200)}`); }
 }
 const sig1 = allSignals().find((e) => String(e.taskId || '') === `expr:${id1}` || String(e.stableKey || '') === `autoir-circuit-${id1}`);
-// v4.12.3：先给自己造的信号打 synthetic 标记，再走后续销账/清理（否则它会以"逼真形状"永久占住主槽）
-console.log(`    （synthetic 标记：${markSynthetic(id1)} 条）`);
-ck('[POS] 我的合成信号已显式标记 synthetic（供收尾腾位识别，不靠形状猜）',
+console.log(`    （按需补标记数：${markSynthetic(id1)} 条，正常应为 0 —— 写入时已带）`);
+ck('[POS] 合成信号在**写入时**即带 synthetic 标记（不靠形状猜；插件据此只留痕不唤醒）',
   allSignals().some((e) => String(e.taskId || '') === `expr:${id1}` && e.synthetic === true));
 ck('[POS] 熔断后确有信号登记（chainId=autoir-circuit）', !!sig1 && sig1.chainId === 'autoir-circuit', sig1 ? `id=${sig1.id} chainId=${sig1.chainId} taskId=${sig1.taskId} reason=${sig1.reason}` : `未找到；现有信号=${JSON.stringify(allSignals().map((e) => e.id))}`);
 ck('[POS] 信号携带**规范 ref**（统一身份，供 ⑩ 精确匹配）', !!sig1 && String(sig1.taskId) === `expr:${id1}`, sig1 ? `taskId=${sig1.taskId}` : '');
@@ -222,7 +224,7 @@ for (let i = 1; i <= 2; i++) {
   const st = readState(id4);
   const step = st.steps.find((s) => String(s.id) === 's1');
   if (step.status !== 'review') { step.status = 'review'; fs.writeFileSync(statePath(id4), JSON.stringify(st, null, 2), 'utf8'); }
-  await post({ workspacePath: base, exprId: id4, stepId: 's1', action: 'reject', comment: `负控第 ${i} 次（不达上限）`, role: 'mainagent' });
+  await post({ workspacePath: base, exprId: id4, stepId: 's1', action: 'reject', comment: `负控第 ${i} 次（不达上限）`, role: 'mainagent', synthetic: true });
 }
 const sig4 = allSignals().find((e) => String(e.taskId || '') === `expr:${id4}`);
 ck('[NEG] 只打回 2 次（未达上限 3）→ **不得**登记熔断信号（证明登记是 trip 驱动的，不是永真）',

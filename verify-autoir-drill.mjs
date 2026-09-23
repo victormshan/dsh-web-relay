@@ -118,7 +118,11 @@ if (process.argv.includes('--selftest')) {
     const st = readState(id3);
     const step = st.steps.find((s) => String(s.id) === 's1');
     if (step.status !== 'review') { step.status = 'review'; fs.writeFileSync(statePath(id3), JSON.stringify(st, null, 2), 'utf8'); }
-    await post({ workspacePath: base, exprId: id3, stepId: 's1', action: 'reject', comment: `负控第 ${i} 次`, role: 'mainagent' });   // 不带 drill
+    // synthetic: true（v4.12.3）——D4 要证明的是"非演练模式**确实写了**"，与"写完是否唤醒主 agent"无关。
+    // 不带标记的后果（2026-09-23 实测）：这条负控产物留在主槽/队列，每次宿主重启都唤醒一次，
+    // 指向一条**不存在的 expr**（base 是临时目录，跑完即删）。带标记后仍会真写（D4 判据不受影响），
+    // 插件识别为合成条目 → 只留痕不唤醒（实测 reason=synthetic-no-wake, woken=false）。
+    await post({ workspacePath: base, exprId: id3, stepId: 's1', action: 'reject', comment: `负控第 ${i} 次`, role: 'mainagent', synthetic: true });   // 不带 drill
   }
   const afterReal = signalFingerprint();
   const main = readHumanSignal(SIGNAL_PATH);
