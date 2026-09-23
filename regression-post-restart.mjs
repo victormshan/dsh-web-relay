@@ -121,7 +121,7 @@ const cases = [
   { name: '迭代状态机解析器契约自检', args: ['verify-iteration-state.mjs', '--selftest-parsers'], expectExit: 0, mustInclude: ['RESULT: 13/13'] },
   // ㉕ 2026-09-20 新增：**事件驱动路径的行为验证**（熔断登记 / 版间门落盘）。
   // 用生产代码路径合成真实事件（临时 base，零污染）；信号侧带"只清自己条目"护栏，故可进回归套件常驻覆盖。
-  { name: '事件驱动路径行为验证（熔断登记 + 版间门落盘 + 队列收敛·零副作用）', args: ['verify-autoir-events.mjs'], expectExit: 0, mustInclude: ['RESULT: 13/13'] },
+  { name: '事件驱动路径行为验证（熔断登记 + 版间门落盘 + 队列收敛·零副作用）', args: ['verify-autoir-events.mjs'], expectExit: 0, mustInclude: ['RESULT: 14/14 PASS'] },
   // ㉖ 接线断言（静态兜底）——防"行为验证过的接线被后续重构摘掉"
   { name: '自动迭代接线断言自检', args: ['verify-autoir-wiring.mjs', '--selftest'], expectExit: 0, mustInclude: ['RESULT: 7/7'] },
   // ㉗ 演练模式（插件 dryRun）：零副作用的行为验证（--selftest 含"真写一次"的负控，故只在回归里跑，不进周期审计）
@@ -129,7 +129,7 @@ const cases = [
   // ㉘ 单写者锁（refresh 造出两个会话并发写工作区的机制性修复）
   { name: '单写者锁自检', args: ['verify-single-writer.mjs', '--selftest'], expectExit: 0, mustInclude: ['RESULT: 13/13'] },
   // ㉙ 信号通道写入守卫（路径断言 + 主槽形状 + 绕过扫描）——防"算错路径落回主槽把信号写成 []"
-  { name: '信号通道写入守卫自检', args: ['verify-signal-write-guard.mjs', '--selftest'], expectExit: 0, mustInclude: ['RESULT: 19/19'] },
+  { name: '信号通道写入守卫自检', args: ['verify-signal-write-guard.mjs', '--selftest'], expectExit: 0, mustInclude: ['RESULT: 22/22'] },
   // ㉚ 当前手机链接：解析与"token 是否仍有效"的两侧判定（不打印未经验证的凭证）
   { name: '当前手机链接自检', args: ['current-link.mjs', '--selftest'], expectExit: 0, mustInclude: ['RESULT: 8/8'] },
   // ㉚b 手机链路端到端：鉴权语义 + SPA 外壳 + 静态资源字节一致性。

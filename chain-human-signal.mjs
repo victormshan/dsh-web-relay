@@ -130,7 +130,7 @@ export function readQueue(file = SIGNAL_PATH) {
 
 const isRealQueue = (p) => String(p).replace(/\\/g, '/').toLowerCase() === String(queuePathOf(SIGNAL_PATH)).replace(/\\/g, '/').toLowerCase();
 
-function writeQueue(file, arr) {
+export function writeQueue(file, arr) {
   if (!Array.isArray(arr)) throw new Error('writeQueue: 队列内容必须是数组')
   fs.writeFileSync(queuePathOf(file), JSON.stringify(arr, null, 2), 'utf8');
 }
@@ -222,4 +222,34 @@ export function acknowledgeHumanSignal(note = '', file = SIGNAL_PATH) {
     writeHumanSignal(promoted, file);
   }
   return { ok: true, entry: promoted || r.entry, acked: r.entry, promoted };
+}
+
+/**
+ * 清除**合成夹具**占用的主槽（cf. 2026-09-23 实测：verify-autoir-events 的合成熔断信号被销账后
+ * 仍留在主槽，而 acknowledge 只打时间戳、不腾位置 → 每次宿主重启去重集重置，主 agent 又被它唤醒一次）。
+ *
+ * 安全性（本函数唯一重要的事）：**只允许清 synthetic === true 的条目**。
+ * 真实告警（无该标记）一律拒绝（ok:false）—— 宁可让夹具多留一轮，也绝不误删真实告警。
+ * 清空后若队列非空，按 acknowledge 的同一规则提升一条（代数 +1）。
+ */
+export function clearSyntheticSignal(file = SIGNAL_PATH) {
+  assertWriteRight({ what: '写信号通道（clearSyntheticSignal）' })
+  const r = readHumanSignal(file);
+  if (!r.ok || !r.entry) return { ok: false, reason: '主槽为空或不可读' };
+  if (r.entry.synthetic !== true) {
+    return { ok: false, reason: `拒绝：主槽条目 ${r.entry.id} 未标记 synthetic（真实告警不得由本入口清理）`, entry: r.entry };
+  }
+  const cleared = r.entry;
+  // 通道回到"无信号"态：直接删文件（写空壳会被插件误判为畸形信号）
+  try { fs.rmSync(file, { force: true }) } catch (e) { return { ok: false, reason: '删除失败：' + e.message } }
+  let promoted = null;
+  const q = readQueue(file);
+  if (q.length) {
+    const [head, ...rest] = q;
+    const g = Number(head.generation || 1) + 1;
+    promoted = { ...head, generation: g, id: head.stableKey ? `${head.stableKey}#g${g}` : head.id, acknowledgedAt: null, ackNote: null };
+    writeQueue(file, rest);
+    writeHumanSignal(promoted, file);
+  }
+  return { ok: true, cleared, promoted };
 }

@@ -16,7 +16,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { readHumanSignal, readQueue, acknowledgeHumanSignal, writeHumanSignal, buildHumanSignal, writeHumanSignalIfNew, queuePathOf, SIGNAL_PATH } from './chain-human-signal.mjs';
+import { readHumanSignal, readQueue, acknowledgeHumanSignal, writeHumanSignal, writeQueue, buildHumanSignal, writeHumanSignalIfNew, queuePathOf, clearSyntheticSignal, SIGNAL_PATH } from './chain-human-signal.mjs';
 
 /** 从队列中移除自己的条目 —— **两种路径都清**（规范 `<基础名>.queue.json` + 历史 `<全名>.queue.json`），
  *  否则 readQueue 的合并读取会让"已清掉"的条目从另一条路径又冒出来。规范路径写裸数组（= 约定形态）。 */
@@ -71,6 +71,34 @@ const allSignals = () => {
   return out;
 };
 
+/**
+ * 给"我自己造出来的"信号打 synthetic 标记（v4.12.3）。
+ * 为什么必须显式标记：本脚本走**生产路径** `registerCircuitBreakerSignal` 登记信号，id 是逼真的时间戳
+ * （`autoir-circuit-expr-YYYY-MM-DD_HH-MM-SS`），形状与真实熔断告警**完全一致** —— 靠形状/前缀猜不出来。
+ * 不打标记的后果（2026-09-23 实测）：夹具被销账后仍留在主槽，acknowledge 只打时间戳不腾位置，
+ * 于是每次宿主重启、插件去重集重置后，主 agent 又被这条**不存在的 expr**唤醒一次。
+ * 标记后由收尾的 clearSyntheticSignal 腾位（该入口有硬守卫：非 synthetic 条目一律拒绝）。
+ */
+const markSynthetic = (exprId) => {
+  let n = 0;
+  try {
+    const m = readHumanSignal(SIGNAL_PATH);
+    if (m.ok && m.entry && String(m.entry.taskId || '') === `expr:${exprId}` && m.entry.synthetic !== true) {
+      writeHumanSignal({ ...m.entry, synthetic: true }); n++;
+    }
+  } catch { /* 主槽不可读 */ }
+  try {
+    const q = readQueue(SIGNAL_PATH) || [];
+    let hit = false;
+    const q2 = q.map((e) => {
+      if (String(e.taskId || '') === `expr:${exprId}` && e.synthetic !== true) { hit = true; n++; return { ...e, synthetic: true }; }
+      return e;
+    });
+    if (hit) writeQueue(SIGNAL_PATH, q2);
+  } catch { /* 队列不可读 */ }
+  return n;
+};
+
 console.log('=== 事件一：熔断 → needs-human 登记（生产路径）===');
 const id1 = stamp(0);
 fs.writeFileSync(statePath(id1), JSON.stringify(mkState(id1), null, 2), 'utf8');
@@ -87,6 +115,10 @@ for (let i = 1; i <= 3; i++) {
   if (r.status !== 200) { console.log(`    ⚠ 响应：${JSON.stringify(r.body).slice(0, 200)}`); }
 }
 const sig1 = allSignals().find((e) => String(e.taskId || '') === `expr:${id1}` || String(e.stableKey || '') === `autoir-circuit-${id1}`);
+// v4.12.3：先给自己造的信号打 synthetic 标记，再走后续销账/清理（否则它会以"逼真形状"永久占住主槽）
+console.log(`    （synthetic 标记：${markSynthetic(id1)} 条）`);
+ck('[POS] 我的合成信号已显式标记 synthetic（供收尾腾位识别，不靠形状猜）',
+  allSignals().some((e) => String(e.taskId || '') === `expr:${id1}` && e.synthetic === true));
 ck('[POS] 熔断后确有信号登记（chainId=autoir-circuit）', !!sig1 && sig1.chainId === 'autoir-circuit', sig1 ? `id=${sig1.id} chainId=${sig1.chainId} taskId=${sig1.taskId} reason=${sig1.reason}` : `未找到；现有信号=${JSON.stringify(allSignals().map((e) => e.id))}`);
 ck('[POS] 信号携带**规范 ref**（统一身份，供 ⑩ 精确匹配）', !!sig1 && String(sig1.taskId) === `expr:${id1}`, sig1 ? `taskId=${sig1.taskId}` : '');
 ck('[POS] 熔断确实发生（rejectStreak 达 3 且 expr 置 paused）', rejects >= 3 && readState(id1).status === 'paused', `rejectStreak=${rejects} status=${readState(id1).status}`);
@@ -205,14 +237,25 @@ try { fs.rmSync(base, { recursive: true, force: true }); console.log('\n（临�
 // 故收尾统一清扫自己造的所有合成条目；真实告警一律保留。
 {
   const SYNTH2 = ['verify-blocker-', 'wake-path-probe-', 'post-restart-verify-probe-'];
-  const isS = (e) => e && SYNTH2.some((x) => String(e.id || '').startsWith(x));
+  // v4.12.3（2026-09-23 实测）：合成条目不仅按 id 前缀识别，也认显式标记 synthetic===true
+  const isS = (e) => e && (e.synthetic === true || SYNTH2.some((x) => String(e.id || '').startsWith(x)));
   try {
     const qq = readQueue(SIGNAL_PATH) || [];
     const mine = qq.filter(isS);
     for (const e of mine) removeQueueEntry(e.id);
     const mm = readHumanSignal(SIGNAL_PATH);
-    // 主槽若被我造的夹具占着 → 销账（会提升队列中的真实条目）；**绝不**动非合成条目
-    if (mm.ok && mm.entry && isS(mm.entry) && !mm.entry.acknowledgedAt) acknowledgeHumanSignal('本探针收尾：清理合成占位夹具');
+    if (mm.ok && mm.entry && isS(mm.entry)) {
+      if (!mm.entry.acknowledgedAt) {
+        // 未销账 → 销账（会提升队列中的真实条目），随后腾出主槽
+        acknowledgeHumanSignal('本探针收尾：清理合成占位夹具');
+      }
+      // **关键修复**：已销账也要腾位置。此前只处理未销账分支，导致合成夹具销账后**永久占着主槽**，
+      // 而 acknowledge 只打时间戳不移除 ⇒ 每次宿主重启、插件去重集重置后，主 agent 又被它唤醒一次
+      // （2026-09-23 实测：收到一条 expr-2026-09-23_22-56-55 的合成熔断唤醒）。
+      // clearSyntheticSignal 有硬守卫：只清 synthetic/前缀匹配的合成条目，真实告警一律拒绝。
+      const cl = clearSyntheticSignal(SIGNAL_PATH);
+      console.log(`  （收尾腾位：${cl.ok ? '已清除主槽合成夹具 ' + (cl.cleared && cl.cleared.id) : '未清除 → ' + cl.reason}）`);
+    }
     if (mine.length) console.log(`  （收尾清扫：从队列移除 ${mine.length} 条合成夹具）`);
   } catch { /* 收尾失败不影响判定 */ }
 }

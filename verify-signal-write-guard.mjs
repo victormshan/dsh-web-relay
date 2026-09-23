@@ -8,12 +8,14 @@
 //   G3 静态接线：活工具（非 `_` 前缀的一次性脚本）**不得绕过格式权威直写信号文件**（调用点穷举）。带
 //      **合成违例负控**，证明这条扫描不是永真。
 //   G4 交付/重启已纳入写锁（静态接线断言）——它们与信号同属"互相覆盖会丢数据"的写入。
+//   G5 重启清单登记：主槽被占时必须拒绝（接线断言）。
+//   G6 合成夹具腾位：只清 synthetic===true，**真实告警必须被拒且原样保留**（2026-09-23 加）。
 //
 // 用法: node verify-signal-write-guard.mjs --selftest   # 两侧自检（全部纯函数/临时文件，绝不碰真实信号）
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { assertSignalPath, signalFiles, queuePathOf, SIGNAL_PATH } from './chain-human-signal.mjs';
+import { assertSignalPath, signalFiles, queuePathOf, clearSyntheticSignal, SIGNAL_PATH } from './chain-human-signal.mjs';
 import { assertSignalShape } from './chain-human-signal.mjs';
 
 const WORK = 'D:\\dsh relay test';
@@ -95,6 +97,35 @@ console.log('\n=== G5 重启清单登记：主槽被占时**必须拒绝**（接
   ck('[POS] 提供显式逃生口 --queue-ok（不把合法入队场景堵死）', hasEscape, hasEscape ? 'ok' : '缺逃生口');
   const beforeWrite = txt.indexOf('拒绝登记') < txt.indexOf('writeHumanSignalIfNew(');
   ck('[POS] 检查位于**写入之前**（顺序断言）', beforeWrite, beforeWrite ? 'ok' : '顺序不对：检查跑到写入之后了');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// G5（v4.12.3，2026-09-23 实测）：合成夹具的**腾位**入口必须带硬守卫
+// 背景：verify-autoir-events 走生产路径登记的合成熔断信号被销账后仍留在主槽
+// （acknowledge 只打时间戳不移除），每次宿主重启去重集重置 → 主 agent 又为一条**不存在的 expr**被唤醒。
+// 修法是加 clearSyntheticSignal（只清 synthetic===true）。此处把它锁进守卫测试：
+//   正控 —— synthetic 夹具必须能被清；
+//   负控 —— **真实告警（无标记）必须被拒绝且文件原样保留**（这条比正控更重要）。
+console.log('\n=== G6 合成夹具腾位入口：只清 synthetic，真实告警必须被拒 ===');
+{
+  const tmp = path.join(os.tmpdir(), `sig-guard-${Date.now()}.json`);
+  try {
+    fs.writeFileSync(tmp, JSON.stringify({ id: 'synth#g1', chainId: 'x', reason: 'review-needed', stableKey: 'synth', generation: 1, at: new Date().toISOString(), synthetic: true }), 'utf8');
+    const r1 = clearSyntheticSignal(tmp);
+    ck('[POS] synthetic 夹具 → 允许清除且文件被删', r1.ok === true && !fs.existsSync(tmp), JSON.stringify(r1).slice(0, 80));
+
+    const real = { id: 'real-alert#g1', chainId: 'real', reason: 'review-needed', stableKey: 'real-alert', generation: 1, at: new Date().toISOString(), acknowledgedAt: new Date().toISOString() };
+    fs.writeFileSync(tmp, JSON.stringify(real), 'utf8');
+    const r2 = clearSyntheticSignal(tmp);
+    const kept = fs.existsSync(tmp) && JSON.parse(fs.readFileSync(tmp, 'utf8')).id === 'real-alert#g1';
+    ck('[NEG] 真实告警（无标记）→ 必须拒绝且原样保留', r2.ok === false && kept, `ok=${r2.ok} 保留=${kept}`);
+
+    fs.rmSync(tmp, { force: true });
+    const r3 = clearSyntheticSignal(tmp);
+    ck('[NEG] 主槽为空 → 返回 ok:false 且不抛错', r3.ok === false, String(r3.reason).slice(0, 36));
+  } finally {
+    fs.rmSync(tmp, { force: true });
+  }
 }
 
 const bad = results.filter((r) => !r.cond).length;
