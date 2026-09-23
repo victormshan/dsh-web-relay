@@ -116,6 +116,7 @@ else
     plan "cp -r $PLUGIN_ROOT/bin $TARGET/bin"
     plan "cp $PLUGIN_ROOT/package.json $TARGET/package.json"
     plan "cp $PLUGIN_ROOT/cordis.patch.yml $TARGET/cordis.patch.yml (if present)"
+    plan "cp -r $PLUGIN_ROOT/{shim,skills,docs,scripts} $TARGET/ (if present; v4.12.1)"
   else
     mkdir -p "$TARGET"
     cp -r "$PLUGIN_ROOT/lib" "$TARGET/"
@@ -124,7 +125,43 @@ else
     if [ -f "$PLUGIN_ROOT/cordis.patch.yml" ]; then
       cp "$PLUGIN_ROOT/cordis.patch.yml" "$TARGET/"
     fi
+    # v4.12.1: package.json files list also ships shim/skills/docs/scripts; the installer used to
+    # copy only lib/bin, so offline installs lacked the docs-referenced scripts entirely.
+    for d in shim skills docs scripts; do
+      [ -d "$PLUGIN_ROOT/$d" ] && cp -r "$PLUGIN_ROOT/$d" "$TARGET/"
+    done
   fi
+fi
+
+# =========================================================================
+# step 1b (v4.12.1): install the apiProxy shim -- REQUIRED on dsh 0.1.5+
+#   dsh 0.1.5+ removed the apiProxy service entirely; without this shim the plugin's
+#   inject=[apiProxy] stays pending and dsh web fails to boot. Neither installer had
+#   this step before, which is the root cause of "docs say install, then it fails".
+# =========================================================================
+SHIM_SRC="$PLUGIN_ROOT/shim/dsh-apiproxy-shim"
+SHIM_TARGET="$PROFILE_DIR/node_modules/dsh-apiproxy-shim"
+if [ -d "$SHIM_SRC" ]; then
+  log "step1b: installing shim dsh-apiproxy-shim into $SHIM_TARGET"
+  if [ "$DRY_RUN" -eq 1 ]; then
+    plan "cp -r $SHIM_SRC/{lib,test,package.json} $SHIM_TARGET/"
+    plan "node $SHIM_TARGET/test/selftest.mjs   # expect 10/10"
+  else
+    mkdir -p "$SHIM_TARGET"
+    cp -r "$SHIM_SRC/lib" "$SHIM_TARGET/"
+    cp "$SHIM_SRC/package.json" "$SHIM_TARGET/"
+    [ -d "$SHIM_SRC/test" ] && cp -r "$SHIM_SRC/test" "$SHIM_TARGET/"
+    # post-install selftest: shim controller bridging (10 cases), verifiable immediately
+    if command -v node >/dev/null 2>&1 && [ -f "$SHIM_TARGET/test/selftest.mjs" ]; then
+      if node "$SHIM_TARGET/test/selftest.mjs" >/tmp/dsh-shim-selftest.txt 2>&1; then
+        log "step1b: shim selftest OK: $(tail -1 /tmp/dsh-shim-selftest.txt)"
+      else
+        log "step1b: WARNING shim selftest failed:"; cat /tmp/dsh-shim-selftest.txt >&2 || true
+      fi
+    fi
+  fi
+else
+  log "step1b: note: no shim/dsh-apiproxy-shim in source -> on dsh 0.1.5+ the plugin will stay pending"
 fi
 
 # register the plugin in the profile's cordis.patch.yml (idempotent)
@@ -151,6 +188,34 @@ else
       echo "  - id: dsh-web-relay"
       echo "    name: dsh-web-relay"
     } >> "$CORDIS_PATCH"
+  fi
+fi
+
+# register the shim in the profile's cordis.patch.yml (idempotent; v4.12.1)
+#   Same empty-array-placeholder pitfall as above: strip `[]` before appending.
+if [ -d "$SHIM_SRC" ]; then
+  if [ -f "$CORDIS_PATCH" ] && grep -q "dsh-apiproxy-shim" "$CORDIS_PATCH" 2>/dev/null; then
+    log "step1b: $CORDIS_PATCH already registers dsh-apiproxy-shim, skip"
+  else
+    log "step1b: registering dsh-apiproxy-shim in $CORDIS_PATCH"
+    if [ "$DRY_RUN" -eq 1 ]; then
+      plan "append to $CORDIS_PATCH (after removing empty [] placeholder):"
+      plan "  - insert:"
+      plan "      - id: dsh-apiproxy-shim"
+      plan "        name: dsh-apiproxy-shim"
+    else
+      mkdir -p "$PROFILE_DIR"
+      if [ -f "$CORDIS_PATCH" ]; then
+        sed -i '/^[[:space:]]*\[[[:space:]]*\]$/d' "$CORDIS_PATCH" 2>/dev/null || true
+      else
+        : > "$CORDIS_PATCH"
+      fi
+      {
+        echo "- insert:"
+        echo "  - id: dsh-apiproxy-shim"
+        echo "    name: dsh-apiproxy-shim"
+      } >> "$CORDIS_PATCH"
+    fi
   fi
 fi
 

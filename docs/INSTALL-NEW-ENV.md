@@ -1,6 +1,7 @@
 # dsh-web-relay 新环境安装指引（INSTALL-NEW-ENV）
 
-> 版本：v4.9.2（cap-persist 2026-09-07，外部 AI 协定 expr-2026-09-07_14-02-38，排位 A→C→B→D）
+> 版本：v4.12.1（cap-persist 2026-09-07，外部 AI 协定 expr-2026-09-07_14-02-38，排位 A→C→B→D；
+> v4.12.1 补 §2c shim 必装步骤与一键脚本的 shim 支持——此前两者都缺，导致新线装完启动失败）
 > 适用：把 dsh-web-relay 及其**主 agent 能力持久化体系**装到新 harness / 新机器。
 
 ## 0. 两载体的职责（先分清）
@@ -38,6 +39,35 @@ if (-not (Select-String -Path $patch -Pattern 'dsh-web-relay' -Quiet)) {
 ```
 > 或直接运行 `scripts/install-new-env.ps1 -PluginSource <根> -WhatIf`（§5）。
 > 安装后**重启 dsh web**（Host half 启动时加载）；仅改 client.js 时浏览器 bundle 走 HMR 自动热更（见 static-plugin-development skill）。
+
+### 2c. shim 必须一起装（dsh 0.1.5+ 线**必需**）
+
+> 2026-09-23 实测补记（v4.12.1）：**只装插件、不装 shim，在 dsh 0.1.5+ 上起不来**。
+> 原因：新线整包移除了 `apiProxy` 服务，而本插件 `inject=[..., 'apiProxy']` 会停在 `pending`，
+> 宿主 boot 断言失败（`N entries did not activate`）。此前的安装脚本与本文档都没有这一步
+> （`grep shim` 命中 0 次），是"照文档装完却启动失败"的根因。
+
+```powershell
+# shim 与插件同级装在 profile 的 node_modules 下
+$shimSrc = "<插件源>\shim\dsh-apiproxy-shim"
+$shimDst = "$env:USERPROFILE\.dsh\profiles\web\node_modules\dsh-apiproxy-shim"
+New-Item -ItemType Directory -Force -Path $shimDst | Out-Null
+Copy-Item "$shimSrc\lib","$shimSrc\test" $shimDst\ -Recurse -Force
+Copy-Item "$shimSrc\package.json" $shimDst\ -Force
+
+# cordis.patch.yml 追加 shim 行（幂等；同样要先删空数组占位 []）
+$patch = "$env:USERPROFILE\.dsh\profiles\web\cordis.patch.yml"
+if (-not (Select-String -Path $patch -Pattern 'dsh-apiproxy-shim' -Quiet)) {
+  Add-Content $patch "`n- insert:`n  - id: dsh-apiproxy-shim`n    name: dsh-apiproxy-shim"
+}
+
+# 装后自检（当场可判，不必等重启）：期望 10/10 passed
+node "$shimDst\test\selftest.mjs"
+```
+
+Linux/WSL 侧等价路径为 `~/.dsh/profiles/<profile>/node_modules/dsh-apiproxy-shim`，自检同为
+`node <dst>/test/selftest.mjs`。两个一键脚本（§5）自 v4.12.1 起会自动完成本节全部步骤并跑自检。
+> 0.1.0-rc.7 线装了也无害：shim 只 `provide('apiProxy')`，该线本来就有同名服务。
 
 ## 3. 能力包安装（主 agent 语境能力）
 
@@ -78,7 +108,9 @@ powershell -ExecutionPolicy Bypass -File scripts/install-new-env.ps1 -PluginSour
 
 ## 6. 装后验证清单
 
-- [ ] `dsh --profile web --dump-config` 含 dsh-web-relay 行；`/status version=4.9.2`
+- [ ] `dsh --profile web --dump-config` 含 dsh-web-relay 行；`/status version=4.12.1`
+- [ ] **（dsh 0.1.5+ 必需）** `dsh --profile web --dump-config` 含 **dsh-apiproxy-shim** 行，
+      且 `node ~/.dsh/profiles/web/node_modules/dsh-apiproxy-shim/test/selftest.mjs` → `10/10 passed`（§2c）
 - [ ] `~/.dsh/skills/` 含 dsh-web-relay-main-agent / auto-iteration-modeling / agent-tool-troubleshooting（裸会话可 skill 加载）
 - [ ] `verify-capabilities.mjs`（registry 17）+ `verify-lessons.mjs`（37, error=0）
 - [ ] watchdog 在跑（计划任务 Running）；`/health-check` 有 bootId + heartbeat

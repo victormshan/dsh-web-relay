@@ -42,8 +42,37 @@ if ($PluginSource) {
       Copy-Item (Join-Path $PluginSource 'bin') (Join-Path $dst 'bin') -Recurse -Force -ErrorAction SilentlyContinue
       Copy-Item $srcPkg $dst -Force
       Copy-Item (Join-Path $PluginSource 'cordis.patch.yml') $dst -Force
+            # v4.12.1: package.json files list also ships shim/skills/docs/scripts, but the
+            # installer used to copy only lib/bin -- offline installs then lacked them.
+      foreach ($d in 'shim','skills','docs','scripts') {
+        $s = Join-Path $PluginSource $d
+        if (Test-Path $s) { Copy-Item $s (Join-Path $dst $d) -Recurse -Force }
+      }
     }
   }
+  # ---------- 1b) v4.12.1: install the apiProxy shim (REQUIRED on dsh 0.1.5+) ----------
+    # dsh 0.1.5+ removed the apiProxy service entirely; without this shim the plugin's
+    # inject=[apiProxy] stays pending and dsh web fails to boot. Neither installer had this step.
+  $shimSrc = Join-Path $PluginSource 'shim\dsh-apiproxy-shim'
+  if (Test-Path $shimSrc) {
+    $shimDst = Join-Path $profileDir ('node_modules' + [IO.Path]::DirectorySeparatorChar + 'dsh-apiproxy-shim')
+    Maybe "install shim (dsh 0.1.5+ compat: apiProxy -> sessionController.prompt) to $shimDst" {
+      New-Item -ItemType Directory -Force -Path $shimDst | Out-Null
+      Copy-Item (Join-Path $shimSrc 'lib') (Join-Path $shimDst 'lib') -Recurse -Force
+      Copy-Item (Join-Path $shimSrc 'package.json') $shimDst -Force
+      $shimTest = Join-Path $shimSrc 'test'
+      if (Test-Path $shimTest) { Copy-Item $shimTest (Join-Path $shimDst 'test') -Recurse -Force }
+    }
+        # post-install selftest: shim controller bridging (10 cases), verifiable immediately
+    $selftest = Join-Path $shimDst 'test\selftest.mjs'
+    if ((-not $WhatIf) -and (Test-Path $selftest)) {
+      try {
+        $out = & node $selftest 2>&1 | Out-String
+        if ($LASTEXITCODE -eq 0) { Log ("shim selftest OK: " + ($out.Trim() -split "`n" | Select-Object -Last 1)) }
+        else { Log ("WARNING: shim selftest failed (exit=$LASTEXITCODE): " + $out.Trim()) }
+      } catch { Log ("WARNING: shim selftest could not run: " + $_.Exception.Message) }
+    }
+  } else { Log 'note: no shim/dsh-apiproxy-shim in source -> if dsh is on the 0.1.5+ line, the plugin will stay pending' }
   $patch = Join-Path $profileDir 'cordis.patch.yml'
   if (Test-Path $patch) {
     $has = Select-String -Path $patch -Pattern 'dsh-web-relay' -Quiet
@@ -52,6 +81,15 @@ if ($PluginSource) {
         Add-Content $patch ("`n- insert:`n  - id: dsh-web-relay`n    name: dsh-web-relay")
       }
     } else { Log 'cordis.patch.yml already has dsh-web-relay (skip append)' }
+        # v4.12.1: shim must also be registered (required on 0.1.5+; harmless on rc.7)
+    if (Test-Path $shimSrc) {
+      $hasShim = Select-String -Path $patch -Pattern 'dsh-apiproxy-shim' -Quiet
+      if (-not $hasShim) {
+        Maybe "append shim row to $patch" {
+          Add-Content $patch ("`n- insert:`n  - id: dsh-apiproxy-shim`n    name: dsh-apiproxy-shim")
+        }
+      } else { Log 'cordis.patch.yml already has dsh-apiproxy-shim (skip append)' }
+    }
   } else { Log "warning: no cordis.patch.yml at $patch (profile may have no static plugins yet)" }
 }
 
@@ -94,3 +132,5 @@ if ($RegisterWatchdog -and -not $WhatIf) {
 
 # ---------- 4) notes ----------
 Log 'Done. Next: 1) restart dsh web (Host half loads); 2) setx DSH_RELAY_REPO <repo> (User); 3) optional setx DSH_SESSION_ID (see OPS-RESTART-RESUME s6).'
+Log 'On dsh 0.1.5+ the shim (dsh-apiproxy-shim) is REQUIRED - it was installed and registered above when present.'
+Log 'Verify: node <profile>\node_modules\dsh-apiproxy-shim\test\selftest.mjs  (expect 10/10)'

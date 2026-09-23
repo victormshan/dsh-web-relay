@@ -23,12 +23,15 @@ English intro: a protocol-driven collaboration layer for DeepSeek Harness — th
 
 ### 插件（dsh web profile）
 ```sh
-# 从 Git 源（推荐，本仓库即源）
+# 从 Git 源（**当前唯一可用方式**：本包未发布到 npm，`npm view dsh-web-relay` 返回 404）
 dsh plugin --profile web add git+https://github.com/victormshan/dsh-web-relay.git
-# 或发布 npm 后
-dsh plugin --profile web add dsh-web-relay
-# 离线：复制 lib/bin/package/cordis.patch.yml 到 profile node_modules + cordis.patch.yml 追加插件行（或 scripts/install-new-env.ps1/.sh）
+# 离线：复制 lib/bin/shim/skills/docs/scripts + package.json + cordis.patch.yml 到 profile node_modules
+#       （或直接用 scripts/install-new-env.ps1/.sh，两个脚本都会连 shim 一起装好）
 ```
+**新线（dsh 0.1.5+）还必须装 shim**：`shim/dsh-apiproxy-shim` 是 `apiProxy` 服务的提供者，
+只装插件不装它 → 插件停在 `pending`、宿主启动断言失败（`N entries did not activate`）。
+一键脚本已自动处理；手工安装见 [docs/INSTALL-NEW-ENV.md](docs/INSTALL-NEW-ENV.md) §2c。
+装好后自检：`node <profile>/node_modules/dsh-apiproxy-shim/test/selftest.mjs`（期望 `10/10 passed`）。
 安装后**重启 dsh web**（Host half 启动加载；仅改 client.js 走浏览器 HMR 热更）。
 
 ### 能力包（主 agent 语境能力：docs/skills/lessons）
