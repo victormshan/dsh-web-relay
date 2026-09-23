@@ -627,3 +627,15 @@ test('源码契约：wakeMainAgent 的去重判定必须早于 apiProxy 调用',
   assert.ok(coalesceIdx < promptIdx, '去重判定必须在真正投递之前（否则照旧堆积）')
   assert.match(body, /suppressed-coalesced/, '抑制时必须有可 grep 的留痕 decision')
 })
+
+// ---- ccfeat-20260922-waketrace: 唤醒留痕必须可 grep（console.warn 实测不进宿主日志）----
+test('源码契约：warnPendingWake 必须同时写 durable NDJSON（否则"每信号必留痕"无法验证）', () => {
+  const src = readFileSync(fileURLToPath(new URL('../lib/index.js', import.meta.url)), 'utf8')
+  const i = src.indexOf('function warnPendingWake(')
+  assert.ok(i >= 0, '应能定位 warnPendingWake')
+  const body = src.slice(i, i + 1200)
+  assert.match(body, /console\.warn\(/, '应保留 console 输出（人看）')
+  assert.match(body, /appendFileSync\(/, '必须另写 durable 文件（grep 可验证）')
+  assert.match(src, /WAKE_TRACE_PATH\s*=/, '应定义留痕路径常量')
+  assert.match(src, /wake-trace\.ndjson/, '留痕文件名为 wake-trace.ndjson')
+})
