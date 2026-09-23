@@ -25,7 +25,16 @@ const delay = Number(argOf('--delay', '120'));
 // 为什么在重启前尤其重要：重启会批量化此前的交付，若期间别人改了仓库/工作区，等于把未知状态一起激活。
 { const guardName = argOf('--guard', null); if (guardName) { const g = guardGate(guardName); console.log(g.message); if (!g.ok) process.exit(g.exit); } }
 const reason = argOf('--reason', 'restart via restart-with-checklist.mjs');
-const items = argOf('--items', '⑤ 交付接地应为「精确（三方指纹一致）」;verify-shadow-availability 应 PASS（定时 Shadow GC 已启用）;分层审计 ⑧ 层（配额判据/策略穷举）应 PASS;分层审计总判定应为 OK;副本不一致/缺失应为 0').split(';').map((s) => s.trim()).filter(Boolean);
+const customItems = argOf('--items', '⑤ 交付接地应为「精确（三方指纹一致）」;verify-shadow-availability 应 PASS（定时 Shadow GC 已启用）;分层审计 ⑧ 层（配额判据/策略穷举）应 PASS;分层审计总判定应为 OK;副本不一致/缺失应为 0').split(';').map((s) => s.trim()).filter(Boolean);
+// v4.12.2（2026-09-23 用户提问"不是已经有一项重启后自动报出手机连接的功能了吗"）：
+// 此前 --items 是**整体覆盖**，于是最近每次重启的自定义清单都把手机链接那项挤掉了 —— 能力在、载体没挂上。
+// token 随每次重启轮换，所以清单里**只能写"现读并报告"**，不能写死链接值（写死=把失效凭证给人，§8.8/§8.2）。
+// 故把手机链接设为**强制项**：无论是否传 --items，都追加在末尾，不可被覆盖。
+const MANDATORY_ITEMS = [
+  '手机链接：现读并报告当前有效链接（node current-link.mjs，须自报"有效"）——token 随重启轮换，禁止贴旧值',
+  '手机链路端到端实测：node verify-mobile-link.mjs（无 token 401 / 正确 token 303+cookie / 静态资源字节一致，应 8/8 PASS）',
+];
+const items = [...customItems, ...MANDATORY_ITEMS];
 
 const detail = [
   '【重启后核对清单】（由 restart-with-checklist.mjs 在重启前登记）',

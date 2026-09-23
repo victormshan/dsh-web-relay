@@ -132,6 +132,12 @@ const cases = [
   { name: '信号通道写入守卫自检', args: ['verify-signal-write-guard.mjs', '--selftest'], expectExit: 0, mustInclude: ['RESULT: 19/19'] },
   // ㉚ 当前手机链接：解析与"token 是否仍有效"的两侧判定（不打印未经验证的凭证）
   { name: '当前手机链接自检', args: ['current-link.mjs', '--selftest'], expectExit: 0, mustInclude: ['RESULT: 8/8'] },
+  // ㉚b 手机链路端到端：鉴权语义 + SPA 外壳 + 静态资源字节一致性。
+  // 运行器只认 expectExit/mustInclude/stateInvariant（无退出码白名单）；瞬时网络错误会以 exit=4 出现，
+  // 此时本项 FAIL 属预期（未验证不得读成通过），重跑即可恢复。
+  { name: '手机链路判据自检(正控+负控)', args: ['verify-mobile-link.mjs', '--selftest'], expectExit: 0, mustInclude: ['RESULT: 16/16'] },
+  // 手机链路端到端**实测**（真实网络）：瞬时错误会以 exit=4 出现，此时 FAIL 属预期，重跑恢复。
+  { name: '手机链路端到端实测', args: ['verify-mobile-link.mjs'], expectExit: 0, mustInclude: ['RESULT: 7/7'] },
   // ㉛ 乐观检测：工作树指纹 record/check（覆写前发现"世界变了"）
   { name: '乐观检测自检', args: ['optimistic-guard.mjs', '--selftest'], expectExit: 0, mustInclude: ['RESULT: 7/7'] },
   // ㉜ 乐观检测接线：--guard 在落盘前拦截（含"无记录→4"与"已变动→1"两条负控 + 重启顺序断言）
