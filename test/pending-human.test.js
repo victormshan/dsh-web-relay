@@ -2,7 +2,9 @@
 // 运行：node --test test/pending-human.test.js
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { parsePendingHuman, decidePendingHuman, pendingHandoffText, resolveWakeSessionId } from '../lib/pending-human.mjs'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { parsePendingHuman, decidePendingHuman, pendingHandoffText, resolveWakeSessionId, buildPendingHumanWrite } from '../lib/pending-human.mjs'
 
 const goodEntry = { id: 'chain-abc|too-many-attempts', chainId: 'chain-abc', reason: 'too-many-attempts', taskId: 'ccfix-1', detail: '连续 3 次失败', acknowledgedAt: null }
 
@@ -179,4 +181,42 @@ test('resolveWakeSessionId：畸形 activeSessions（缺 id / mtime 非数）被
 test('resolveWakeSessionId：activeSessions 为空数组等价于未提供（回落旧行为，保持向后兼容）', () => {
   assert.equal(resolveWakeSessionId({ activeSessions: [], recentExprSessionId: 'y' }).source, 'recent-expr')
   assert.equal(resolveWakeSessionId({ activeSessions: null, recentExprSessionId: 'y' }).source, 'recent-expr')
+})
+
+// ---- ccfeat-20260923-synthetic: 合成夹具标记必须在**写入时**就带上 ----
+// 背景：门禁/回归每次都会跑 verify-autoir-events，它走生产路径登记一条**形状逼真**的熔断信号
+// （id 是真实时间戳，与真告警同形）。夹具被销账后仍留在主槽，而插件去重集随宿主重启重置
+// ⇒ 同一夹具连续三次唤醒主 agent，每次都指向一条**不存在的 expr**。事后补标记已经太晚，故写入时即标记。
+test('buildPendingHumanWrite：synthetic=true 时写入该字段（供插件唤醒路径识别）', () => {
+  const r = buildPendingHumanWrite({ chainId: 'autoir-circuit', reason: 'too-many-attempts', stableKey: 'autoir-circuit-x', synthetic: true })
+  assert.equal(r.ok, true)
+  assert.equal(r.entry.synthetic, true, 'synthetic 必须落进条目')
+})
+
+test('[NEG] buildPendingHumanWrite：未传 synthetic 时**不得**产生该字段（防真实告警被当夹具）', () => {
+  const r = buildPendingHumanWrite({ chainId: 'autoir-circuit', reason: 'too-many-attempts', stableKey: 'autoir-circuit-y' })
+  assert.equal(r.ok, true)
+  assert.equal(Object.prototype.hasOwnProperty.call(r.entry, 'synthetic'), false, '真实告警不得带 synthetic 字段')
+  const r2 = buildPendingHumanWrite({ chainId: 'autoir-circuit', reason: 'too-many-attempts', stableKey: 'z', synthetic: false })
+  assert.equal(Object.prototype.hasOwnProperty.call(r2.entry, 'synthetic'), false, 'synthetic=false 也不写字段')
+})
+
+test('parsePendingHuman 能读回 synthetic 标记（往返一致）', () => {
+  const built = buildPendingHumanWrite({ chainId: 'autoir-circuit', reason: 'too-many-attempts', stableKey: 'autoir-circuit-r', synthetic: true })
+  const back = parsePendingHuman(JSON.stringify(built.entry))
+  assert.equal(back.ok, true)
+  assert.equal(back.entry.synthetic, true)
+})
+
+test('源码契约：唤醒路径必须对 synthetic 条目短路（只留痕不唤醒），且判据在 decide 之前', () => {
+  const src = readFileSync(fileURLToPath(new URL('../lib/index.js', import.meta.url)), 'utf8')
+  const i = src.indexOf('async function checkPendingHuman')
+  assert.ok(i >= 0, '应能定位 checkPendingHuman')
+  const body = src.slice(i, i + 6000)
+  const synIdx = body.indexOf("entry.synthetic === true")
+  const decIdx = body.indexOf('decidePendingHuman(entry')
+  assert.ok(synIdx >= 0, 'checkPendingHuman 必须判定 synthetic')
+  assert.ok(decIdx >= 0, '应仍有 decidePendingHuman 调用')
+  assert.ok(synIdx < decIdx, 'synthetic 短路必须在 decide 之前（否则仍会唤醒）')
+  assert.match(body, /synthetic-no-wake/, '短路时必须有可 grep 的留痕 reason')
 })
