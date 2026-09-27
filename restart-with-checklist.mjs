@@ -30,10 +30,15 @@ const customItems = argOf('--items', '⑤ 交付接地应为「精确（三方�
 // 此前 --items 是**整体覆盖**，于是最近每次重启的自定义清单都把手机链接那项挤掉了 —— 能力在、载体没挂上。
 // token 随每次重启轮换，所以清单里**只能写"现读并报告"**，不能写死链接值（写死=把失效凭证给人，§8.8/§8.2）。
 // 故把手机链接设为**强制项**：无论是否传 --items，都追加在末尾，不可被覆盖。
+// 2026-09-23 追加第 4 条（用户确认）：生成"手机跳转页"并报出文件路径。
+// 为什么要这一步：手机在**应用内浏览器**（微信/QQ 等 WebView）里打开时，HttpOnly + SameSite=Strict 的
+// dsh-auth cookie 常常不落地 ⇒ 带 token 仍 401（实测：token 完整到达 httpbin，但手机仍被拒）。
+// 本机生成的 mobile-open.html 用元刷新把浏览器（而非 WebView）带到面板，绕开该限制。
 const MANDATORY_ITEMS = [
   '手机链接：现读并报告当前有效链接（node current-link.mjs，须自报"有效"）——token 随重启轮换，禁止贴旧值',
   '手机链路端到端实测：node verify-mobile-link.mjs（须 0 FAIL；无 token 拒 / 正确 token 接受+cookie / 静态资源字节一致）',
   '手机链路判据自检（正控+负控）：node verify-mobile-link.mjs --selftest（须 0 FAIL）',
+  '生成手机跳转页并报出路径：powershell -ExecutionPolicy Bypass -File "D:\\dsh relay test\\refresh-mobile-link.ps1"（产出 D:\\cc-tasks\\mobile-open.html，供手机在**文件管理器**里用系统浏览器打开；应用内浏览器可能不落地 cookie）',
 ];
 const items = [...customItems, ...MANDATORY_ITEMS];
 
