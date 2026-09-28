@@ -214,9 +214,18 @@ for (const layer of REQUIRED_LAYERS) {
     if (!quiet) console.log(`${'SKIP'.padEnd(16)} ${layer.name}  链条运行中 → 未验证`);
     continue;
   }
-  const pr = spawnSync(process.execPath, [path.join(WORK, layer.file), ...layer.args], { cwd: WORK, encoding: 'utf8' });
+  // 2026-09-23 修复（一次 ACTION-NEEDED 误报的根因，见诊断文件）：
+  //   spawnSync 默认 maxBuffer = 1MB；本文件原先**没设**，而各层输出完全可能超限
+  //   （verify-gates 36 项、verify-claims 长清单都会带大量子行）。超限时 node 会把子进程判为
+  //   error(ENOBUFS) 且 status=null ⇒ 该层被记成失败，且**多层会在同一轮同时失败** ——
+  //   表现正是"瞬时、不可复现、③⑥⑪ 一起挂"。其余 11 处工具都已设 maxBuffer，此处是遗漏。
+  const pr = spawnSync(process.execPath, [path.join(WORK, layer.file), ...layer.args], { cwd: WORK, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
   const out = `${pr.stdout || ''}\n${pr.stderr || ''}`;
   const tail = out.split('\n').map((s) => s.trim()).filter(Boolean).slice(-1)[0] || '';
+  // 失败详情留存：只留 tail 会让瞬时故障**永远无法归因**（本次就是如此——仓底被下一次成功运行覆盖，
+  // 无从知道当时三层为何同时返回 exit 1）。故保留 head 段与 spawnSync 的错误对象。
+  const head = out.slice(0, 6000);
+  const spawnError = pr.error ? String(pr.error.code || pr.error.message || pr.error) : null;
   const forced = negKey === layer.key;
   let code = forced ? 1 : pr.status;
   let skipped = false;
@@ -233,7 +242,7 @@ for (const layer of REQUIRED_LAYERS) {
     } else if (!SKIPPABLE_WHEN_LOCKED.has(layer.key)) { code = 3; note = '链条运行中，但该层不在可跳过白名单 → 非法跳过'; }
     else { skipped = true; note = '链条运行中 → 未验证（跳过）'; }
   }
-  runs.push({ key: layer.key, name: layer.name, code, signal: pr.signal, tail: note, skipped, unverified });
+  runs.push({ key: layer.key, name: layer.name, code, signal: pr.signal, tail: note, skipped, unverified, head, spawnError, elapsedMs: null });
   if (!quiet) {
     const tag = skipped ? 'SKIP' : unverified ? 'UNVERIFIED' : forced ? 'FORCED-FAIL' : code === 0 ? 'PASS' : code === 1 ? 'FAIL' : 'INSTRUMENT-ERROR';
     console.log(`${tag.padEnd(16)} ${layer.name}  ${note}`);
@@ -275,4 +284,32 @@ try {
 } catch { /* 日志写不了不影响判定 */ }
 
 if (process.argv.includes('--json')) fs.writeFileSync(path.join(WORK, 'audit-latest.json'), JSON.stringify({ at, verdict, runs }, null, 2), 'utf8');
+
+// 失败详情留存（2026-09-23 加）：审计此前只写"每层最后一行"，一次 ACTION-NEEDED 误报之后
+// 被下一次成功运行覆盖 ⇒ 那三层当时为何同时 exit 1 **永远无法归因**（本次实测就是如此）。
+// 故凡非 0 退出（ACTION-NEEDED / INSTRUMENT-ERROR），把**出问题层的完整 head 段 + 子进程错误 +
+// 退出码/信号**落盘到 audit-last-failure.md，供事后定位。成功运行不清除该文件（历史证据保留）。
+try {
+  const bad = runs.filter((r) => r.code !== 0 && r.code !== 4)
+  if (bad.length > 0) {
+    const lines = [
+      `# 分层审计失败详情（${at}）`,
+      '',
+      `总判定：**${verdict.verdict}**（exit=${verdict.exit}）`,
+      `原因：${verdict.reason}`,
+      '',
+      ...bad.flatMap((r) => [
+        `## ${r.name}（key=${r.key}）`,
+        `- 退出码：${r.code}${r.signal ? ` ｜ 信号：${r.signal}` : ''}${r.spawnError ? ` ｜ spawnSync 错误：${r.spawnError}` : ''}`,
+        `- 末行：${r.tail}`,
+        '',
+        '```',
+        String(r.head || '').slice(0, 6000),
+        '```',
+        '',
+      ]),
+    ]
+    fs.writeFileSync(path.join(WORK, 'audit-last-failure.md'), lines.join('\n'), 'utf8')
+  }
+} catch { /* 诊断留存失败不影响审计判定 */ }
 process.exit(verdict.exit);
