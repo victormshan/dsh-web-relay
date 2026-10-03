@@ -1,11 +1,14 @@
 // v2.4-1/v2.4-2/v2.4-3: 三端 Health Checker 测试（v2.0.0）
 // 运行：node --test test/health-checker.test.js
-// 镜像 lib/index.js PLUGIN_VERSION 读取与 bridge 状态判定逻辑。
+// PLUGIN_VERSION 读取仍为镜像；bridge 状态判定（v4.12.2 起）直接导入 lib/bridge-poll.js 的真实实现。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+// bridge 状态归一化：直接导入真实实现（v4.12.2 起不再手抄镜像——旧镜像停留在 v3.3.0 之前的
+// /stats 形状，测试全绿却在测已废弃路径）
+import { normalizeBridgeProbe } from '../lib/bridge-poll.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const repoRoot = path.resolve(__dirname, '..')
@@ -17,10 +20,6 @@ function pluginVersion() {
     return JSON.parse(raw).version || '0.0.0'
   } catch (err) { return '0.0.0' }
 }
-
-// ---- bridge 状态归一化：直接导入真实实现（v4.12.2 起不再手抄镜像——旧镜像停留在
-// v3.3.0 之前的 /stats 形状，测试全绿却在测已废弃路径）----
-import { normalizeBridgeProbe } from '../lib/bridge-poll.js'
 
 test('PLUGIN_VERSION 从 package.json 读取且与声明一致', () => {
   const v = pluginVersion()

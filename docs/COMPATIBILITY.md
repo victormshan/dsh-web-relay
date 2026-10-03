@@ -7,6 +7,7 @@
 
 | dsh-web-relay | 可用 dsh 版本 | 依赖 | 实测证据 |
 |---|---|---|---|
+| **4.12.2** | **0.1.0-rc.7 线** 与 **0.1.5+（新线）** | 同 4.12.1 的两条版本线，无依赖变化。**行为变更**：合成熔断夹具在写入时即带 `synthetic` 标记——仅当调用方显式 `synthetic:true` **且** expr 的 base 落在临时目录、或路径中含夹具命名片段（`_synth-probe-`、`_fixture-`、`-fixture`、`verify-fixture` 等，按子串匹配）时才生效，插件对此类条目**只留痕不唤醒**（`synthetic-no-wake`）。未显式传 `synthetic:true` 的真实告警不受影响；但真实工作区路径若恰好含上述片段且调用方误传该标记，告警会被静默（36375f4 / c7f8aaa）。**修复**：bridge 共享 token 被重新生成后，带 token 的 bridge 请求（create-task / task-result / 健康视图 /stats）遇 401 自动清缓存重取 token 重试一次，不再在 1 小时缓存期内持续误判 web-gemini 故障并降级 dialog；健康检查 bridge 判定提为导出函数、测试直连真实实现；仓库内 `deploy.ps1` 加 UTF-8 BOM 与 `-Encoding UTF8`，Windows PowerShell 5.1 下可解析（该脚本不在 package `files` 中，仅对从仓库部署生效）。 | 全量 `node --test` 552 例：WSL 下 549 过，3 个 shadow-gate 用例因夹具写死 Windows 路径 `D:/DSH` 失败（与本版无关，36375f4 时 Windows 下为 543/543）；PowerShell 5.1.19041 解析 deploy.ps1 由 5 处错误降为 0 |
 | **4.12.1** | **0.1.0-rc.7 线** 与 **0.1.5+（新线）** | 同 4.12.0 的两条版本线；**安装链路修复**：两个一键脚本补 shim 安装与注册（新线必需，此前缺失导致装完启动失败）、离线复制补齐 shim/skills/docs/scripts、package.json `files` 补 5 个被文档引用的脚本、README/INSTALL-NEW-ENV 标注"未发布 npm"并新增 §2c shim 必装节。 |
 | **4.12.0** | **0.1.0-rc.7 线** 与 **0.1.5+（新线）** | 同 4.11.1 的两条版本线；**结构性修复**：唤醒合并/去重——同一逻辑目标（会话+expr+步骤+动作）在冷却窗内重复触发不再追加整回合，消除「同一步骤反复触发导致会话队列线性堆积」（实测峰值 54 条）；另修终态实验上 reopen 已 approved 步骤产生「请执行」交接。 |
 | **4.11.1** | **0.1.0-rc.7 线** 与 **0.1.5+（新线）** | 同 4.11.0 的两条版本线；修复：终态实验上 reopen/start 已 approved 步骤不再产生「请执行」交接唤醒（避免陈旧回合堆叠，见 L-2026-0922-100）。 |

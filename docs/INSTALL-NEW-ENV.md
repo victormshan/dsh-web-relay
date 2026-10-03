@@ -2,6 +2,7 @@
 
 > 版本：v4.12.1（cap-persist 2026-09-07，外部 AI 协定 expr-2026-09-07_14-02-38，排位 A→C→B→D；
 > v4.12.1 补 §2c shim 必装步骤与一键脚本的 shim 支持——此前两者都缺，导致新线装完启动失败）
+> v4.12.2：安装步骤无变化，仅 §6 自检的期望版本号随发布更新。
 > 适用：把 dsh-web-relay 及其**主 agent 能力持久化体系**装到新 harness / 新机器。
 
 ## 0. 两载体的职责（先分清）
@@ -108,7 +109,7 @@ powershell -ExecutionPolicy Bypass -File scripts/install-new-env.ps1 -PluginSour
 
 ## 6. 装后验证清单
 
-- [ ] `dsh --profile web --dump-config` 含 dsh-web-relay 行；`/status version=4.12.1`
+- [ ] `dsh --profile web --dump-config` 含 dsh-web-relay 行；`/status version=4.12.2`
 - [ ] **（dsh 0.1.5+ 必需）** `dsh --profile web --dump-config` 含 **dsh-apiproxy-shim** 行，
       且 `node ~/.dsh/profiles/web/node_modules/dsh-apiproxy-shim/test/selftest.mjs` → `10/10 passed`（§2c）
 - [ ] `~/.dsh/skills/` 含 dsh-web-relay-main-agent / auto-iteration-modeling / agent-tool-troubleshooting（裸会话可 skill 加载）

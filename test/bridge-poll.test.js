@@ -5,7 +5,8 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { classifyBridgeTask, BRIDGE_STALL_MS_DEFAULT, BRIDGE_PENDING_MS_DEFAULT } from '../lib/bridge-poll.js'
+import { readFileSync } from 'node:fs'
+import { classifyBridgeTask, BRIDGE_STALL_MS_DEFAULT, BRIDGE_PENDING_MS_DEFAULT, fetchWithTokenRetry } from '../lib/bridge-poll.js'
 
 test('bridge-poll: done + answer → 成功返回 answer', () => {
   const v = classifyBridgeTask({ status: 'done', answer: 'PROBE-OK' })
@@ -105,8 +106,6 @@ test('bridge-poll: processing 优先于 pending 判定（状态互斥不干扰�
 })
 
 // ---- v4.12.2: bridge token 轮换自愈（fetchWithTokenRetry）----
-import { fetchWithTokenRetry } from '../lib/bridge-poll.js'
-import { readFileSync } from 'node:fs'
 
 function fakeBridge(statuses) {
   // 依次返回给定状态码；记录每次请求携带的 token
