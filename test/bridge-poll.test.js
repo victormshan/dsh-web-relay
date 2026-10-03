@@ -103,3 +103,62 @@ test('bridge-poll: processing 优先于 pending 判定（状态互斥不干扰�
   const v = classifyBridgeTask({ status: 'processing' }, { processingSince: now - 95_000, pendingSince: now - 95_000, now })
   assert.equal(v.state, 'stalled')
 })
+
+// ---- v4.12.2: bridge token 轮换自愈（fetchWithTokenRetry）----
+import { fetchWithTokenRetry } from '../lib/bridge-poll.js'
+import { readFileSync } from 'node:fs'
+
+function fakeBridge(statuses) {
+  // 依次返回给定状态码；记录每次请求携带的 token
+  const calls = []
+  let token = 'stale'
+  let invalidations = 0
+  const auth = {
+    getHeaders: async () => ({ 'x-dsh-bridge-token': token }),
+    invalidate: () => { invalidations++; token = 'fresh' },
+  }
+  const doFetch = async (headers) => {
+    calls.push(headers['x-dsh-bridge-token'])
+    return { status: statuses[Math.min(calls.length - 1, statuses.length - 1)] }
+  }
+  return { auth, doFetch, calls, invalidations: () => invalidations }
+}
+
+test('token 轮换：首个 401 → 清缓存重取 token 重试一次 → 200，自愈', async () => {
+  const b = fakeBridge([401, 200])
+  const res = await fetchWithTokenRetry(b.doFetch, b.auth)
+  assert.equal(res.status, 200)
+  assert.deepEqual(b.calls, ['stale', 'fresh'], '重试必须带新取的 token')
+  assert.equal(b.invalidations(), 1)
+})
+
+test('真实密钥不一致：重试后仍 401 → 只重试一次，返回 401 交由调用方原文报错', async () => {
+  const b = fakeBridge([401, 401, 401])
+  const res = await fetchWithTokenRetry(b.doFetch, b.auth)
+  assert.equal(res.status, 401)
+  assert.equal(b.calls.length, 2, '不得无限重试')
+  assert.equal(b.invalidations(), 1)
+})
+
+test('非 401（200/404/500）不重试、不清缓存', async () => {
+  for (const status of [200, 404, 500]) {
+    const b = fakeBridge([status])
+    const res = await fetchWithTokenRetry(b.doFetch, b.auth)
+    assert.equal(res.status, status)
+    assert.equal(b.calls.length, 1)
+    assert.equal(b.invalidations(), 0)
+  }
+})
+
+test('网络异常原样抛出（由调用方既有 catch 处理），不吞错', async () => {
+  const auth = { getHeaders: async () => ({}), invalidate: () => { throw new Error('不应调用') } }
+  await assert.rejects(fetchWithTokenRetry(async () => { throw new Error('ECONNREFUSED') }, auth), /ECONNREFUSED/)
+})
+
+test('接线：index.js 所有带 token 的 bridge 请求都经 bridgeFetch（不再直接拼 bridgeHeaders）', () => {
+  const src = readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8')
+  assert.equal((src.match(/await bridgeHeaders\(\)/g) || []).length, 0, '不应再有直接使用 bridgeHeaders() 的请求')
+  for (const ep of ['/create-task', '/task-result/', '/stats']) {
+    assert.ok(new RegExp('bridgeFetch\\(`\\$\\{BRIDGE_BASE\\}' + ep.replace(/\//g, '\\/')).test(src), `${ep} 应经 bridgeFetch`)
+  }
+})
