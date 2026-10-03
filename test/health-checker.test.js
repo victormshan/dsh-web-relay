@@ -18,11 +18,9 @@ function pluginVersion() {
   } catch (err) { return '0.0.0' }
 }
 
-// ---- 镜像：bridge 状态归一化（与 health-check 端点一致）----
-function normalizeBridge(d) {
-  if (d && d.ok !== false) return { ok: true, total: d.total, byStatus: d.byStatus || {} }
-  return { ok: false, error: 'bridge 响应异常' }
-}
+// ---- bridge 状态归一化：直接导入真实实现（v4.12.2 起不再手抄镜像——旧镜像停留在
+// v3.3.0 之前的 /stats 形状，测试全绿却在测已废弃路径）----
+import { normalizeBridgeProbe } from '../lib/bridge-poll.js'
 
 test('PLUGIN_VERSION 从 package.json 读取且与声明一致', () => {
   const v = pluginVersion()
@@ -32,18 +30,22 @@ test('PLUGIN_VERSION 从 package.json 读取且与声明一致', () => {
   assert.ok(src.includes(`PLUGIN_VERSION`))
 })
 
-test('bridge 状态归一化：正常响应', () => {
-  const d = normalizeBridge({ ok: true, total: 4, byStatus: { done: 4 } })
-  assert.equal(d.ok, true)
-  assert.equal(d.total, 4)
-  assert.deepEqual(d.byStatus, { done: 4 })
+test('bridge 状态归一化：/__token 正常响应 → 在线（token 就绪）', () => {
+  assert.deepEqual(normalizeBridgeProbe({ ok: true, token: 'x'.repeat(64) }), { ok: true, note: 'bridge 在线（token 就绪）' })
+  // 与 index.js 原内联判定一致：未显式 ok:false 的对象都视为在线
+  assert.equal(normalizeBridgeProbe({}).ok, true)
 })
 
 test('bridge 状态归一化：异常/空响应标记失败', () => {
-  const d = normalizeBridge(null)
-  assert.equal(d.ok, false)
-  const d2 = normalizeBridge({ ok: false })
-  assert.equal(d2.ok, false)
+  for (const d of [null, undefined, { ok: false }, { ok: false, error: 'x' }]) {
+    assert.deepEqual(normalizeBridgeProbe(d), { ok: false, error: 'bridge 响应异常' })
+  }
+})
+
+test('接线：health-check 的 bridge 字段由 normalizeBridgeProbe 生成（无内联重复实现）', () => {
+  const src = fs.readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8')
+  assert.ok(src.includes('bridge = normalizeBridgeProbe(d)'))
+  assert.ok(!src.includes("? { ok: true, note: 'bridge 在线（token 就绪）' }"), '不应残留内联副本')
 })
 
 test('health-check 状态灯判定（bridge 绿/红）', () => {
