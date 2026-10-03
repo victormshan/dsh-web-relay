@@ -1,4 +1,7 @@
-# dsh-web-relay 部署脚本（含版本断言）
+﻿# dsh-web-relay 部署脚本（含版本断言）
+# 编码（v4.12.2）：本文件必须保留开头的 UTF-8 BOM——Windows PowerShell 5.1（非 PowerShell 7）
+# 对无 BOM 脚本按系统 ANSI 代码页解析，中文字符串会被读乱导致语法错误（.editorconfig 已对 *.ps1
+# 设 utf-8-bom 防止编辑器保存时去掉）；读 package.json 的两处 Get-Content 同理显式 -Encoding UTF8。
 # 用法: powershell -ExecutionPolicy Bypass -File deploy.ps1 [-RepoRoot D:\dsh-web-relay]
 # 作用: 校验源仓库版本与安装目录版本关系后，将 lib/ + package.json + cordis.patch.yml 复制到安装目录。
 # 版本断言规则（改进方案 P1-2 修正：原"相等才部署"方向反了——正常部署场景恰是"源新于装"）：
@@ -16,8 +19,8 @@ if (-not (Test-Path "$RepoRoot\package.json")) { throw "仓库根无效: $RepoRo
 if (-not (Test-Path $InstallDir)) { throw "安装目录不存在: $InstallDir" }
 
 # ---- 版本断言（Version Assertion）----
-$srcVersion = (Get-Content "$RepoRoot\package.json" -Raw | ConvertFrom-Json).version
-$instVersion = (Get-Content "$InstallDir\package.json" -Raw | ConvertFrom-Json).version
+$srcVersion = (Get-Content "$RepoRoot\package.json" -Raw -Encoding UTF8 | ConvertFrom-Json).version
+$instVersion = (Get-Content "$InstallDir\package.json" -Raw -Encoding UTF8 | ConvertFrom-Json).version
 
 Write-Host "源仓库版本: $srcVersion  安装目录版本: $instVersion"
 

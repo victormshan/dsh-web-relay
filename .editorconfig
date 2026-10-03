@@ -20,3 +20,7 @@ indent_size = 2
 
 [*.md]
 trim_trailing_whitespace = false
+
+# v4.12.2: Windows PowerShell 5.1 需要 BOM 才按 UTF-8 解析含中文的脚本（见 deploy.ps1 头注释）
+[*.ps1]
+charset = utf-8-bom
